@@ -214,6 +214,10 @@ end
 server = Nostrd::Server.new(store: store, socket_path: options[:socket], signer: signer,
                             publisher: (publisher if options[:live]),
                             history: options[:history] || 100,
+                            # Web client follows: orchestrator state + store,
+                            # then the op republishes kind 3 via the signer.
+                            follow: ->(pk) { orchestrator&.follow(pk) },
+                            unfollow: ->(pk) { orchestrator&.unfollow(pk) },
                             # Gossip relay switches: local-only merge (inbox=>read, outbox=>write).
                             relay_flags: ->(p) {
                               o = orchestrator

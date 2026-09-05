@@ -10,7 +10,8 @@ module Nostrd
   class Server
     def initialize(store:, socket_path:, signer: ->(_name, _params) { true }, publisher: nil,
                    info: nil, relay_flags: nil, advertise_relays: nil, relay_remove: nil, lock: nil, unlock: nil, import_key: nil,
-                   one_shot: nil, history: 100)
+                   one_shot: nil, history: 100,
+                   follow: nil, unfollow: nil)
       @store = store
       @path = socket_path
       @signer = signer
@@ -25,6 +26,8 @@ module Nostrd
       @import_key = import_key # (nsec|hex, passphrase) -> create_key
       @history = history # default timeline replay size (--history); a client
       # may still pass params.limit to override per subscription
+      @follow = follow # pubkey -> orchestrator.follow (state + dial)
+      @unfollow = unfollow # pubkey -> orchestrator.unfollow
       @listeners = [] # timeline subscriber conns for live broadcast
       @mos = Mutex.new
     end
@@ -128,6 +131,10 @@ module Nostrd
       when "relay_remove" then relay_remove(conn, msg)
       when "advertise_relays" then advertise_relays(conn, msg)
       when "announce_repo" then announce_repo(conn, msg)
+      when "follow" then follow_op(conn, msg)
+      when "unfollow" then unfollow_op(conn, msg)
+      when "delete_note" then delete_note_op(conn, msg)
+      when "search" then search_op(conn, msg)
       else reply(conn, ev: "error", code: "unknown_op", message: msg["op"].to_s)
       end
     end
@@ -177,12 +184,62 @@ module Nostrd
     end
 
     def lookup(conn, msg)
+      params = msg.dig("params") || {}
+      case msg["kind"]
+      when "note"
+        return note_lookup(conn, msg, params)
+      when "author"
+        return author_lookup(conn, msg, params)
+      when "profile"
+        return profile_lookup(conn, msg, params)
+      end
+
       event = @store.find_event(msg.dig("params", "id").to_s)
       if event
         reply(conn, ev: "result", id: msg["id"], data: event.to_h)
       else
         reply(conn, ev: "error", id: msg["id"], code: "not_found", message: "no such event")
       end
+    end
+
+    # kind "note": flat event, or scope:"thread" = note + its NIP-22
+    # comments (kind 1111, root "E" tag) + NIP-25 reactions (kind 7).
+    def note_lookup(conn, msg, params)
+      id = params["id"].to_s
+      event = @store.find_event(id)
+      unless event
+        reply(conn, ev: "error", id: msg["id"], code: "not_found", message: "no such event")
+        return
+      end
+
+      if params["scope"] == "thread"
+        reply(conn, ev: "result", id: msg["id"],
+                   data: { "note" => event.to_h,
+                           "comments" => @store.find_comments(id).map(&:to_h),
+                           "reactions" => @store.find_reactions(id).map(&:to_h) })
+      else
+        reply(conn, ev: "result", id: msg["id"], data: event.to_h)
+      end
+    end
+
+    # kind "author": a pubkey's kind-1 notes, newest first.
+    def author_lookup(conn, msg, params)
+      pubkey = params["pubkey"].to_s
+      unless pubkey.match?(/\A[0-9a-f]{64}\z/)
+        reply(conn, ev: "error", id: msg["id"], code: "bad_request", message: "pubkey must be 64 hex chars")
+        return
+      end
+
+      limit = (params["limit"] || 50).to_i.clamp(1, 200)
+      notes = @store.timeline_by_author(pubkey, limit: limit)
+      reply(conn, ev: "result", id: msg["id"], data: { "notes" => notes.map(&:to_h) })
+    end
+
+    # kind "profile": stored kind-0 metadata for one pubkey (or null).
+    def profile_lookup(conn, msg, params)
+      pubkey = params["pubkey"].to_s
+      profile = @store.profile_for(pubkey)
+      reply(conn, ev: "result", id: msg["id"], data: { "profile" => profile })
     end
 
     def act(conn, msg)
@@ -272,6 +329,97 @@ module Nostrd
                  published_to: out["published_to"] || 0)
     rescue StandardError => e
       reply(conn, ev: "ack", id: msg["id"], ok: false, error: e.message)
+    end
+
+    # --- web client ops (follows, deletions, search) --------------------
+
+    # Follow: orchestrator state + store, then republish the contact list
+    # (kind 3) so relays learn about the change.
+    def follow_op(conn, msg)
+      pk = msg.dig("params", "pubkey").to_s
+      unless pk.match?(/\A[0-9a-f]{64}\z/)
+        reply(conn, ev: "error", id: msg["id"], code: "bad_request",
+                   message: "pubkey must be 64 hex chars")
+        return
+      end
+
+      @follow&.call(pk)
+      event, published = republish_contacts
+      reply(conn, ev: "ack", id: msg["id"], ok: true,
+                 event_id: event && event[:id], published_to: published&.size || 0)
+    rescue StandardError => e
+      reply(conn, ev: "ack", id: msg["id"], ok: false, error: e.message)
+    end
+
+    def unfollow_op(conn, msg)
+      pk = msg.dig("params", "pubkey").to_s
+      unless pk.match?(/\A[0-9a-f]{64}\z/)
+        reply(conn, ev: "error", id: msg["id"], code: "bad_request",
+                   message: "pubkey must be 64 hex chars")
+        return
+      end
+
+      @unfollow&.call(pk)
+      event, published = republish_contacts
+      reply(conn, ev: "ack", id: msg["id"], ok: true,
+                 event_id: event && event[:id], published_to: published&.size || 0)
+    rescue StandardError => e
+      reply(conn, ev: "ack", id: msg["id"], ok: false, error: e.message)
+    end
+
+    # NIP-09: sign kind 5 for the stored events, publish, then purge them
+    # from the store. Unknown ids are skipped (nothing to look up).
+    def delete_note_op(conn, msg)
+      ids = Array(msg.dig("params", "ids")).map(&:to_s).select do |id|
+        id.match?(/\A[0-9a-f]{64}\z/)
+      end
+      if ids.empty?
+        reply(conn, ev: "error", id: msg["id"], code: "bad_request",
+                   message: "ids must be 64-hex event ids")
+        return
+      end
+
+      targets = ids.filter_map do |id|
+        (ev = @store.find_event(id)) ? { "id" => id, "kind" => ev.kind } : nil
+      end
+      event = nil
+      published = nil
+      if targets.any?
+        event = @signer.call("delete_note", { "targets" => targets })
+        published = @publisher&.call(event)
+      end
+      deleted = @store.purge_events(targets.map { |t| t["id"] })
+      reply(conn, ev: "ack", id: msg["id"], ok: true,
+                 event_id: event && event[:id], deleted: deleted,
+                 published_to: published&.size || 0)
+    rescue StandardError => e
+      reply(conn, ev: "ack", id: msg["id"], ok: false, error: e.message)
+    end
+
+    # Full-store search: cached notes/comments by content, profiles by
+    # name/display_name/nip05/pubkey prefix.
+    def search_op(conn, msg)
+      query = msg.dig("params", "query").to_s.strip
+      if query.empty?
+        reply(conn, ev: "error", id: msg["id"], code: "bad_request", message: "query is empty")
+        return
+      end
+
+      limit = (msg.dig("params", "limit") || 50).to_i.clamp(1, 200)
+      notes, profiles = @store.search(query, limit: limit)
+      reply(conn, ev: "result", id: msg["id"],
+                 data: { "notes" => notes.map(&:to_h), "profiles" => profiles })
+    rescue StandardError => e
+      reply(conn, ev: "error", id: msg["id"], code: "search_failed", message: e.message)
+    end
+
+    # Kind 3 contact list reflecting the CURRENT follow set (info callable
+    # serves the same source of truth as the orchestrator).
+    def republish_contacts
+      follows = @info&.call&.[]("follows") || []
+      event = @signer.call("update_contacts", { "pubkeys" => follows })
+      published = @publisher&.call(event)
+      [event, published]
     end
 
     def reply(conn, hash)

@@ -93,6 +93,10 @@ module Nostrd
       @db.execute("SELECT pubkey FROM follows ORDER BY pubkey").flatten
     end
 
+    def remove_follow(pubkey)
+      @db.execute "DELETE FROM follows WHERE pubkey = ?", [pubkey]
+    end
+
     # --- events ---
 
     def upsert_event(event)
@@ -136,6 +140,66 @@ module Nostrd
         "SELECT id, pubkey, created_at, kind, content, tags FROM events WHERE id = ?", [id]
       ).first
       row && row_to_event(row)
+    end
+
+    # NIP-22 comments rooted at a note (uppercase "E" tag). GLOB keeps the
+    # match case-sensitive so lowercase "e" (direct parent) never leaks in.
+    def find_comments(root_id)
+      @db.execute(
+        "SELECT id, pubkey, created_at, kind, content, tags FROM events " \
+        "WHERE kind = 1111 AND tags GLOB ? ORDER BY created_at ASC",
+        ['*["E","' + root_id + '"]*']
+      ).map { |row| row_to_event(row) }
+    end
+
+    # NIP-25 reactions targeting an event ("e" tag).
+    def find_reactions(target_id)
+      @db.execute(
+        "SELECT id, pubkey, created_at, kind, content, tags FROM events " \
+        "WHERE kind = 7 AND tags GLOB ? ORDER BY created_at ASC",
+        ['*["e","' + target_id + '"]*']
+      ).map { |row| row_to_event(row) }
+    end
+
+    # A single author's kind-1 notes (profile page), newest first.
+    def timeline_by_author(pubkey, limit: 50)
+      @db.execute(
+        "SELECT id, pubkey, created_at, kind, content, tags FROM events " \
+        "WHERE pubkey = ? AND kind = 1 ORDER BY created_at DESC LIMIT ?",
+        [pubkey, limit]
+      ).map { |row| row_to_event(row) }
+    end
+
+    def purge_events(ids)
+      ids = Array(ids).compact.uniq
+      return 0 if ids.empty?
+
+      placeholders = ids.map { "?" }.join(",")
+      @db.execute("DELETE FROM events WHERE id IN (#{placeholders})", ids)
+      @db.changes
+    end
+
+    # Socket `search` op: cached notes/comments by content plus profiles by
+    # name / display_name / NIP-05 / pubkey prefix. ASCII case-insensitive.
+    def search(query, limit: 50)
+      escaped = query.to_s.gsub(/[\\%_]/) { |c| "\\#{c}" }
+      like = "%#{escaped}%"
+      notes = @db.execute(
+        "SELECT id, pubkey, created_at, kind, content, tags FROM events " \
+        "WHERE kind IN (1, 1111) AND content LIKE ? ESCAPE '\\' " \
+        "ORDER BY created_at DESC LIMIT ?",
+        [like, limit]
+      ).map { |row| row_to_event(row) }
+      profiles = @db.execute(
+        "SELECT pubkey, name, display_name, nip05, picture, about FROM profiles " \
+        "WHERE name LIKE ? ESCAPE '\\' OR display_name LIKE ? ESCAPE '\\' " \
+        "OR nip05 LIKE ? ESCAPE '\\' OR pubkey LIKE ? LIMIT ?",
+        [like, like, like, "#{escaped}%", limit]
+      ).map do |pubkey, name, display_name, nip05, picture, about|
+        { "pubkey" => pubkey, "name" => name, "display_name" => display_name,
+          "nip05" => nip05, "picture" => picture, "about" => about }
+      end
+      [notes, profiles]
     end
 
     # --- profiles (kind 0 metadata: display name, NIP-05, ...) ---

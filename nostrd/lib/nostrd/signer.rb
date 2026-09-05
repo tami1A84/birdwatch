@@ -22,6 +22,8 @@ module Nostrd
     def locked? = @seckey.nil?
 
     def create_key(passphrase:, seckey_hex: nil, logn: 16)
+      # No key given = generate a fresh identity (first-run flow).
+      seckey_hex ||= SecureRandom.bytes(32).unpack1("H*")
       created = NostrCore::Vault.create(passphrase: passphrase, seckey_hex: seckey_hex)
       File.write(@vault_path, created[:blob]) if @vault_path
       File.chmod(0600, @vault_path) if @vault_path # never world-readable
@@ -108,6 +110,24 @@ module Nostrd
         raise ArgumentError, "update_relay_list needs relays [{url:, marker:}]" if tags.empty?
 
         sign_event(10002, "", tags)
+      when "update_contacts"
+        # NIP-01 kind 3 contact list: one p-tag per followed pubkey. The
+        # caller (follow/unfollow op) passes the post-change follow set.
+        pubkeys = params["pubkeys"].to_a.map(&:to_s).select do |pk|
+          pk.match?(/\A[0-9a-f]{64}\z/)
+        end
+        sign_event(3, "", pubkeys.map { |pk| ["p", pk] })
+      when "delete_note"
+        # NIP-09 deletion (kind 5): one e-tag per deleted event plus a k-tag
+        # for its kind. Targets [{id:, kind:}] are resolved by the caller.
+        targets = params["targets"].to_a.filter_map do |t|
+          id = t["id"].to_s
+          id.match?(/\A[0-9a-f]{64}\z/) ? [id, t["kind"].to_s] : nil
+        end
+        raise ArgumentError, "delete_note needs targets [{id:, kind:}]" if targets.empty?
+
+        tags = targets.flat_map { |(id, kind)| [["e", id], ["k", kind]] }
+        sign_event(5, "", tags)
       when "announce_repo"
         # NIP-34 repo announcement (kind 30617) — what Buzz Desktop's Projects
         # view renders. Tag layout mirrors buzz-sdk build_repo_announcement

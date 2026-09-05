@@ -3,7 +3,6 @@
 - Transport: unix socket NDJSON(1行 = 1 JSON オブジェクト)。双方向。
 - Path: `$XDG_RUNTIME_DIR/nostrd.sock`(dev 時は `--socket` で上書き可)
 - すべての行は UTF-8 JSON。未知の op/ev は無視する(前方互換)
-
 ## client → daemon
 
 ```json
@@ -51,3 +50,64 @@
   ```json
   {"op":"announce_repo","id":"r1","params":{"repo_id":"birdwatch","name":"birdwatch","description":"…","clone_urls":["https://github.com/tami1A84/birdwatch.git"],"web_url":"https://github.com/tami1A84/birdwatch"}}
   ```
+## Web クライアント用 op (v0 追加)
+
+### follow / unfollow
+
+フォロー状態を変更し、変更後のフォロー一覧で kind 3(コンタクトリスト)を
+再署名・再公開する。バリデーション失敗(64-hex 以外)は `error` フレーム
+`code:"bad_request"`、処理失敗は `ack ok:false`。
+
+```json
+{"op":"follow","id":"w1","params":{"pubkey":"<64hex>"}}
+{"op":"unfollow","id":"w2","params":{"pubkey":"<64hex>"}}
+```
+```json
+{"ev":"ack","id":"w1","ok":true,"event_id":"…","published_to":2}
+```
+
+### delete_note (NIP-09)
+
+kind 5(削除リクエスト)を署名・公開したのち、対象イベントをストアから
+削除する。`ids` は 64-hex のイベント id 配列。ストアに無い id はスキップ。
+e-tag は各イベント id、k-tag はストアで参照した各イベントの kind。
+
+```json
+{"op":"delete_note","id":"w3","params":{"ids":["<64hex>","<64hex>"]}}
+```
+```json
+{"ev":"ack","id":"w3","ok":true,"event_id":"…","deleted":2,"published_to":1}
+```
+
+### get 拡張
+
+- `kind:"note"` + `params.scope:"thread"`: スレッド取得。
+  `data: {note:<event>, comments:[kind 1111(E==id, 古い順)], reactions:[kind 7(e==id, 古い順)]}`
+- `kind:"author"` + `params:{pubkey, limit}`: その人の kind 1(created_at 降順)。
+  `data: {notes:[…]}`
+- `kind:"profile"` + `params:{pubkey}`: 保存済み kind 0 メタデータ。
+  `data: {profile:{…}|null}`
+
+```json
+{"op":"get","id":"w4","kind":"note","params":{"id":"<64hex>","scope":"thread"}}
+```
+
+### search
+
+ストア内検索。kind 1/1111 の content と、kind 0 の name / display_name /
+nip05 / pubkey 前方一致(ASCII は大小非区別)。空クエリは
+`error code:"bad_request"`。
+
+```json
+{"op":"search","id":"w5","params":{"query":"うんち","limit":50}}
+```
+```json
+{"ev":"result","id":"w5","data":{"notes":[…],"profiles":[…]}}
+```
+
+### timeline フレームの kind
+
+`timeline` チャネル(履歴・ライブとも)の `event` フレームは
+kind 1 + 7(NIP-25 リアクション) + 1111(NIP-22 コメント) を運ぶ。
+クライアントは kind を見て分岐すること(TUI は 7 を 👍 集計に、Web は
+スレッドのリアクション集計に使う)。

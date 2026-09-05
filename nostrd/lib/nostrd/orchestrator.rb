@@ -128,6 +128,16 @@ module Nostrd
       dial_pending
     end
 
+    # Remove a follow: state + store, then re-sync subscriptions. Nothing to
+    # dial — the person's relays simply stop being interesting.
+    def unfollow(*pubkeys)
+      @mutex.synchronize do
+        @followed -= pubkeys
+        pubkeys.each { |pk| @store.remove_follow(pk) if @store.respond_to?(:remove_follow) }
+        tick_unlocked
+      end
+    end
+
     # Everyone whose notes we stream: explicit follows + ourself (own posts
     # must load and stay live without having to follow yourself).
     def persons

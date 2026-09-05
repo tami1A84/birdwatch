@@ -4,7 +4,8 @@
 *.db-wal
 *.sock
 vault
-vault.*
+vault.bin
+vault.ncryptsec
 daemon.log
 daemon.pid
 
