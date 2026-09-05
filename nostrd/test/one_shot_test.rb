@@ -93,10 +93,11 @@ class OneShotTest < Minitest::Test
     assert texts.any? { |t| t.include?('"kind":30617') }
   end
 
-  def test_answers_one_auth_challenge_then_waits_for_ok
+  def test_answers_auth_challenge_then_retries_event_per_nip42
     auth_events = []
     sock = FakeRelaySock.new([
                                server_frame('["AUTH","chal-1"]'),
+                               server_frame('["OK","abab",false,"auth-required: not authenticated"]'),
                                server_frame('["OK","abab",true,""]')
                              ])
     ok, = Nostrd::OneShot.publish("wss://relay.example", EVENT,
@@ -108,7 +109,23 @@ class OneShotTest < Minitest::Test
 
     assert ok
     assert_equal ["chal-1"], auth_events
-    assert sock.client_frames.any? { |t| t.start_with?('["AUTH"') } # challenge answered on the wire
+    texts = sock.client_frames
+    assert_equal 2, texts.count { |t| t.start_with?('["EVENT"') } # original + NIP-42 retry
+    assert texts.any? { |t| t.start_with?('["AUTH"') } # challenge answered on the wire
+  end
+
+  def test_auth_retry_when_rejection_arrives_before_challenge
+    sock = FakeRelaySock.new([
+                               server_frame('["OK","abab",false,"auth-required: please authenticate"]'),
+                               server_frame('["AUTH","chal-2"]'),
+                               server_frame('["OK","abab",true,"dup:1"]')
+                             ])
+    ok, message = Nostrd::OneShot.publish("wss://relay.example", EVENT,
+                                          auth: ->(c) { { kind: 22242, tags: [["challenge", c]] } },
+                                          dial: ->(_u) { sock })
+
+    assert ok
+    assert_equal "dup:1", message
   end
 
   def test_rejection_surfaces_the_relay_message

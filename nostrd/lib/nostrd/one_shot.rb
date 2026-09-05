@@ -27,6 +27,8 @@ module Nostrd
       frames = WebSocket::Frame::Incoming::Client.new
       handshake_done = false
       auth_used = false
+      pending_ok = 0 # pre-auth OKs still to consume (the original EVENT always gets exactly one OK)
+      saw_auth_required = false
       deadline = Time.now.to_f + TIMEOUT
       loop do
         remaining = deadline - Time.now.to_f
@@ -63,12 +65,22 @@ module Nostrd
             msg = JSON.parse(frame.data.to_s) rescue nil
             case msg&.first
             when "OK"
-              return [msg[2] == true, msg[3].to_s]
+              result = [msg[2] == true, msg[3].to_s]
+              if !auth_used && !result[0] && result[1].match?(/auth/i) && auth
+                saw_auth_required = true # rejection of the pre-auth EVENT — its AUTH challenge follows
+              elsif pending_ok.positive?
+                pending_ok -= 1 # pre-auth OK already accounted for (e.g. the original rejection)
+              else
+                return result
+              end
             when "AUTH"
               return [false, "relay requires auth"] if auth.nil? || auth_used
 
               auth_used = true
               sock.write(frame_text(JSON.generate(["AUTH", auth.call(msg[1])])))
+              # NIP-42: retry the original request once authenticated
+              sock.write(frame_text(JSON.generate(["EVENT", event])))
+              pending_ok = saw_auth_required ? 0 : 1
             end
           end
         end

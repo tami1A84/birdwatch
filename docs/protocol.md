@@ -44,7 +44,7 @@
 - `action` は必ず署名オラクル経由(クライアントは生イベントを渡さない)
 - `announce_repo` op: NIP-34 リポジリアナウンス(kind 30617)を署名し、**gossip プールを経由せず
   `params.relay` に直接1回接続して公開する**(既定: `wss://png.communities.buzz.xyz` —
-  Buzz Desktop が読む単一の組み込みリレー。NIP-42 AUTH チャレンジは1回だけ署名して応答)。
+  Buzz Desktop が読む単一の組み込みリレー。NIP-42 AUTH チャレンジには1回だけ署名して応答し、認証後に元の EVENT を再送する)。
   tags は buzz-sdk 同様の d / name / description / clone / web / relays、content は空。
   応答: `{"ev":"ack","id":"r1","ok":true,"event_id":"…","relay":"wss://…","message":""}`。
   Buzz Desktop の Projects ビューはこのリレー上の kind 30617 をそのまま列挙する
