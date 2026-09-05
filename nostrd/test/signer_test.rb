@@ -146,3 +146,22 @@ class SignerTest < Minitest::Test
                  Digest::SHA256.hexdigest(payload)
   end
 end
+
+def test_announce_repo_signs_nip34_kind30617
+  @signer.create_key(passphrase: "opensesame")
+  ev = @signer.call("announce_repo", {
+    "repo_id" => "birdwatch",
+    "name" => "birdwatch",
+    "description" => "Keyboard-first Nostr TUI client for omarchy",
+    "clone_urls" => ["https://github.com/tami1A84/birdwatch.git"],
+    "web_url" => "https://github.com/tami1A84/birdwatch",
+    "relays" => ["wss://png.communities.buzz.xyz"]
+  })
+  assert_equal 30617, ev[:kind]
+  assert_equal "", ev[:content]
+  assert_equal ["d", "birdwatch"], ev[:tags][0]
+  assert_equal ["clone", "https://github.com/tami1A84/birdwatch.git"], ev[:tags][3]
+  assert_equal ["relays", "wss://png.communities.buzz.xyz"], ev[:tags][5]
+  assert_raises(ArgumentError) { @signer.call("announce_repo", { "repo_id" => "bad id!", "clone_urls" => ["x"] }) }
+  assert_raises(ArgumentError) { @signer.call("announce_repo", { "repo_id" => "ok", "clone_urls" => [] }) }
+end

@@ -2,6 +2,7 @@
 
 require "socket"
 require "json"
+require_relative "one_shot"
 
 module Nostrd
   # NDJSON unix socket server. The TUI and the Rails PWA are both clients.
@@ -9,11 +10,12 @@ module Nostrd
   class Server
     def initialize(store:, socket_path:, signer: ->(_name, _params) { true }, publisher: nil,
                    info: nil, relay_flags: nil, advertise_relays: nil, relay_remove: nil, lock: nil, unlock: nil, import_key: nil,
-                   history: 100)
+                   one_shot: nil, history: 100)
       @store = store
       @path = socket_path
       @signer = signer
       @publisher = publisher # signed events -> relays (nil = sign only)
+      @one_shot = one_shot # direct single-relay publish (Buzz Desktop's baked relay)
       @info = info # -> { "follows" => [...], "relays" => [{url, state}] }
       @relay_flags = relay_flags # gossip switches: {url:, read:, inbox:, write:, outbox:, discover:} -> flags
       @advertise_relays = advertise_relays # -> {relays: [...], event_id:, published_to: n}
@@ -125,6 +127,7 @@ module Nostrd
       when "relay_flags" then relay_flags(conn, msg)
       when "relay_remove" then relay_remove(conn, msg)
       when "advertise_relays" then advertise_relays(conn, msg)
+      when "announce_repo" then announce_repo(conn, msg)
       else reply(conn, ev: "error", code: "unknown_op", message: msg["op"].to_s)
       end
     end
@@ -189,6 +192,22 @@ module Nostrd
       reply(conn, ev: "ack", id: msg["id"], ok: true,
                  event_id: event.is_a?(Hash) ? event[:id] : nil,
                  published_to: published&.size || 0)
+    rescue StandardError => e
+      reply(conn, ev: "ack", id: msg["id"], ok: false, error: e.message)
+    end
+
+    # NIP-34 repo announcement -> Buzz Desktop Projects view. The app reads
+    # a single baked relay (VITE_RELAY_URL), so this publishes DIRECTLY to
+    # params["relay"] (default: Buzz's public relay) instead of the gossip
+    # pool. One NIP-42 AUTH challenge is answered via the signer.
+    def announce_repo(conn, msg)
+      event = @signer.call("announce_repo", msg["params"] || {})
+      url = msg.dig("params", "relay") || "wss://png.communities.buzz.xyz"
+      auth = @signer.respond_to?(:auth_event) ? ->(challenge) { @signer.auth_event(challenge, url) } : nil
+      ok, message = (@one_shot || Nostrd::OneShot).publish(url, event, auth: auth)
+      reply(conn, ev: "ack", id: msg["id"], ok: ok,
+                 event_id: event.is_a?(Hash) ? event[:id] : nil,
+                 relay: url, message: message)
     rescue StandardError => e
       reply(conn, ev: "ack", id: msg["id"], ok: false, error: e.message)
     end

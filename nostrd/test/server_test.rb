@@ -185,3 +185,37 @@ class ServerTest < Minitest::Test
     assert_equal before, conn.out.size
   end
 end
+
+class FakeOneShot
+  attr_reader :calls
+
+  def publish(url, event, auth: nil)
+    @calls ||= []
+    @calls << [url, event, auth]
+    [true, "dup"]
+  end
+end
+
+def test_announce_repo_op_publishes_directly_to_buzz_relay
+  signed = { id: "ab" * 32, pubkey: "cd" * 32, kind: 30617, tags: [], content: "" }
+  one = FakeOneShot.new
+  srv = Nostrd::Server.new(store: @store, socket_path: "/tmp/x.sock", signer: ->(_n, _p) { signed }, one_shot: one)
+  conn = FakeConn.new
+  srv.send(:dispatch, conn, { "op" => "announce_repo", "id" => "r1",
+                              "params" => { "repo_id" => "birdwatch",
+                                            "clone_urls" => ["https://github.com/tami1A84/birdwatch.git"] } })
+  frame = msgs(conn).last
+  url, event, auth = one.calls.first
+  assert_equal "wss://png.communities.buzz.xyz", url # Buzz Desktop's baked relay
+  assert_equal signed, event
+  assert_nil auth # lambda signer has no auth_event
+  assert_equal true, frame["ok"]
+  assert_equal signed[:id], frame["event_id"]
+  assert_equal "dup", frame["message"]
+
+  # relay override lands on the caller's relay, not the default
+  srv.send(:dispatch, FakeConn.new, { "op" => "announce_repo", "id" => "r2",
+                                      "params" => { "repo_id" => "birdwatch", "clone_urls" => ["x"],
+                                                    "relay" => "wss://other.example" } })
+  assert_equal "wss://other.example", one.calls.last[0]
+end

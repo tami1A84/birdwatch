@@ -108,6 +108,40 @@ module Nostrd
         raise ArgumentError, "update_relay_list needs relays [{url:, marker:}]" if tags.empty?
 
         sign_event(10002, "", tags)
+      when "announce_repo"
+        # NIP-34 repo announcement (kind 30617) — what Buzz Desktop's Projects
+        # view renders. Tag layout mirrors buzz-sdk build_repo_announcement
+        # (d / name / description / clone / web / relays, empty content).
+        repo_id = params["repo_id"].to_s
+        raise ArgumentError, "repo_id must be [a-zA-Z0-9._-]{1,64}" unless
+          repo_id.match?(/\A[a-zA-Z0-9._-]{1,64}\z/)
+
+        name = params["name"].to_s
+        raise ArgumentError, "name exceeds 128 chars" if name.length > 128
+
+        desc = params["description"].to_s
+        raise ArgumentError, "description exceeds 1024 chars" if desc.length > 1024
+
+        clones = params["clone_urls"].to_a.map(&:to_s)
+        raise ArgumentError, "clone_urls needs 1..5 urls" if clones.empty? || clones.size > 5
+        raise ArgumentError, "clone_url must not be empty" if clones.any?(&:empty?)
+
+        web = params["web_url"].to_s
+        raise ArgumentError, "web_url exceeds 512 chars" if web.length > 512
+
+        relays = params["relays"].to_a.map(&:to_s)
+        raise ArgumentError, "too many relays (max 10)" if relays.size > 10
+        relays.each do |r|
+          raise ArgumentError, "relay must start with ws:// or wss://" unless r.start_with?("ws://", "wss://")
+        end
+
+        tags = [["d", repo_id]]
+        tags << ["name", name] unless name.empty?
+        tags << ["description", desc] unless desc.empty?
+        tags << (["clone"] + clones)
+        tags << ["web", web] unless web.empty?
+        tags << (["relays"] + relays) unless relays.empty?
+        sign_event(30617, "", tags)
       when "get_public_key"
         @pubkey
       else

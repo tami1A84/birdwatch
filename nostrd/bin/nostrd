@@ -233,6 +233,9 @@ server = Nostrd::Server.new(store: store, socket_path: options[:socket], signer:
 
     signer.create_key(passphrase: pass, seckey_hex: hex)
   },
+  # Direct publish to one relay — used by announce_repo (Buzz's baked relay
+  # is not in the gossip pool).
+  one_shot: Nostrd::OneShot,
                             # Advertise Relay List: sign + publish kind 10002 from switch state.
                             advertise_relays: -> {
                               o = orchestrator

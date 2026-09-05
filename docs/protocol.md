@@ -42,3 +42,12 @@
 - `profiles` op: タイムライン著者のプロフィール再取得(op応答は `id` 付き)。デーモンは kind 0 をフォロー中+自己_pubkeyに対し自動シークする: 1試行1リレーで**その人と縁のあるリレー(本人のwriteリレー → 実績のあるリレー)を優先**、 ticksあたり上限付き・指数バックオフ。中身の空 kind 0 は「取得済み」とみなさず別リレーを試す
 - `info` op: TUIのSSSヘッダー用。`follows`(現在フォロー中のpubkey配列)と `relays`(接続中リレーの {url, state})、`profiles`(follows全員の保存済みkind 0メタデータ。名前解決はライブkind-0流入に依存しない)を返す。タブ切替のたびに再要求してよい
 - `action` は必ず署名オラクル経由(クライアントは生イベントを渡さない)
+- `announce_repo` op: NIP-34 リポジリアナウンス(kind 30617)を署名し、**gossip プールを経由せず
+  `params.relay` に直接1回接続して公開する**(既定: `wss://png.communities.buzz.xyz` —
+  Buzz Desktop が読む単一の組み込みリレー。NIP-42 AUTH チャレンジは1回だけ署名して応答)。
+  tags は buzz-sdk 同様の d / name / description / clone / web / relays、content は空。
+  応答: `{"ev":"ack","id":"r1","ok":true,"event_id":"…","relay":"wss://…","message":""}`。
+  Buzz Desktop の Projects ビューはこのリレー上の kind 30617 をそのまま列挙する
+  ```json
+  {"op":"announce_repo","id":"r1","params":{"repo_id":"birdwatch","name":"birdwatch","description":"…","clone_urls":["https://github.com/tami1A84/birdwatch.git"],"web_url":"https://github.com/tami1A84/birdwatch"}}
+  ```

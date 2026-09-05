@@ -36,6 +36,7 @@ TUI は薄く、状態の真実は daemon 側の SQLite が単独で持つ。
 | 22 | コメント (リプライは kind 1111 でスレッド化) |
 | 25 | リアクション (自分の 👍 だけを表示) |
 | 42 | AUTH (リレー要求チャレンジ) |
+| 34 | リポジリアナウンス (kind 30617 → Buzz Desktop の Projects ビュー) |
 | 46 | nostr connect URI + QR (リモート署名は今後) |
 | 49 | 秘密鍵 vault (ncryptsec) |
 | 65 | リレーリストの発見と広告 (kind 10002) |
