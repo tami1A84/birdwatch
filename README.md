@@ -1,6 +1,7 @@
 # birdwatch
 
 omarchy (Arch Linux + Hyprland) 向け、キーボード操作中心の Nostr TUI クライアント。
+![スクリーンショット](https://blossom.ditto.pub/3aaab04da51e562643fedf996b38f6f4b9cc08d20357a042c5160576d30599c6.png)
 
 `nostrd` (daemon) と `nostr-tui` (curses) の2プロセス構成。全部 Ruby。
 TUI は薄く、状態の真実は daemon 側の SQLite が単独で持つ。
