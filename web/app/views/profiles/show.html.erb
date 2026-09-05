@@ -1,0 +1,46 @@
+<% content_for :title, "プロフィール" %>
+<div class="page" data-controller="live">
+  <div class="profile-header">
+    <span class="msr profile-header__avatar">account_circle</span>
+    <div class="profile-header__body">
+      <div class="profile-header__name" data-profile-name data-pubkey="<%= @pubkey %>">
+        <%= @profile && (@profile["display_name"].presence || @profile["name"].presence) || short_pubkey(@pubkey) %>
+      </div>
+      <% if @profile && @profile["name"].present? %>
+        <div class="profile-header__sub">@<%= @profile["name"] %></div>
+      <% end %>
+      <% if @profile && @profile["nip05"].present? %>
+        <div class="profile-header__sub profile-header__nip05">
+          <span class="msr msr--inline">verified</span><%= @profile["nip05"] %>
+        </div>
+      <% end %>
+    </div>
+    <% if @me.present? && @me != @pubkey %>
+      <% if @following %>
+        <%= button_to "フォロー中", follows_destroy_path, method: :post,
+              params: { pubkey: @pubkey }, class: "following-button",
+              form: { data: { confirm: "#{display_name(@pubkey)} のフォローを解除しますか？", confirm_title: "フォロー解除" } } %>
+      <% else %>
+        <%= button_to "フォロー", follows_create_path, method: :post,
+              params: { pubkey: @pubkey }, class: "follow-button" %>
+      <% end %>
+    <% end %>
+  </div>
+
+  <% if @profile && @profile["about"].present? %>
+    <p class="profile-about"><%= @profile["about"] %></p>
+  <% end %>
+
+  <h2 class="section-title">投稿 <span class="section-title__count"><%= @notes.size %></span></h2>
+  <% if @notes.empty? %>
+    <div class="empty-state">
+      <span class="msr empty-state__icon">forum</span>
+      <p class="empty-state__title">まだ投稿がありません</p>
+      <p class="empty-state__body">nostrd が取り込んだ投稿だけが表示されます。</p>
+    </div>
+  <% else %>
+    <div class="feed feed--search">
+      <%= render partial: "notes/card", collection: @notes, as: :note %>
+    </div>
+  <% end %>
+</div>

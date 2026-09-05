@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="ja">
+  <head>
+    <title><%= content_for(:title) || "birdwatch" %></title>
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="color-scheme" content="light dark">
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#FAF8FE">
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#141317">
+    <%= csrf_meta_tags %>
+    <%= csp_meta_tag %>
+    <link rel="manifest" href="<%= pwa_manifest_path %>">
+    <link rel="icon" href="/icon.svg" type="image/svg+xml">
+    <%= stylesheet_link_tag :application, "data-turbo-track": "reload" %>
+    <%= javascript_include_tag "application", type: "module", "data-turbo-track": "reload" %>
+  </head>
+  <body class="page-<%= controller_name %>" data-controller="confirm">
+    <header class="app-bar">
+      <md-icon-button class="app-bar__button" href="<%= favorites_path %>" aria-label="お気に入り">
+        <span class="msr">thumb_up</span>
+      </md-icon-button>
+      <div class="app-bar__title"><%= content_for(:title) || "birdwatch" %></div>
+      <md-icon-button class="app-bar__button" href="<%= search_path %>" aria-label="検索">
+        <span class="msr">search</span>
+      </md-icon-button>
+    </header>
+
+    <main class="content">
+      <% if flash[:notice] %><div class="flash flash--notice" data-toast="<%= flash[:notice] %>"></div><% end %>
+      <% if flash[:alert] %><div class="flash flash--alert" data-toast="<%= flash[:alert] %>"></div><% end %>
+      <%= yield %>
+    </main>
+
+    <nav class="nav-bar" data-controller="nav" data-nav-index-value="<%= nav_index %>">
+      <md-navigation-bar>
+        <md-navigation-tab label="ホーム" data-href="<%= root_path %>">
+          <span class="msr" slot="active-icon">home</span>
+          <span class="msr" slot="inactive-icon">home</span>
+        </md-navigation-tab>
+        <md-navigation-tab label="フォロー" data-href="<%= follows_path %>">
+          <span class="msr" slot="active-icon">group</span>
+          <span class="msr" slot="inactive-icon">group</span>
+        </md-navigation-tab>
+        <md-navigation-tab label="リレー" data-href="<%= relays_path %>">
+          <span class="msr" slot="active-icon">language</span>
+          <span class="msr" slot="inactive-icon">language</span>
+        </md-navigation-tab>
+        <md-navigation-tab label="設定" data-href="<%= settings_path %>">
+          <span class="msr" slot="active-icon">settings</span>
+          <span class="msr" slot="inactive-icon">settings</span>
+        </md-navigation-tab>
+      </md-navigation-bar>
+    </nav>
+
+    <div id="app-toast" class="toast" role="status" aria-live="polite"></div>
+
+    <md-dialog id="confirm-dialog" class="confirm-dialog">
+      <div slot="headline" data-confirm-title>確認</div>
+      <div slot="content">
+        <p class="confirm-dialog__text" data-confirm-text></p>
+      </div>
+      <div slot="actions">
+        <md-text-button data-confirm-cancel data-action="click->confirm#cancel">キャンセル</md-text-button>
+        <md-filled-button data-confirm-submit data-action="click->confirm#submit">実行</md-filled-button>
+      </div>
+    </md-dialog>
+  </body>
+</html>

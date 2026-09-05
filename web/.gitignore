@@ -1,0 +1,19 @@
+# Dependencies and build output
+/node_modules/
+/app/assets/builds/
+
+# Precompiled production assets (run rails assets:precompile)
+/public/assets/
+
+# Rails runtime
+/log/*
+/tmp/*
+!/log/.keep
+!/tmp/.keep
+
+# Master key — credentials.yml.enc is safe to commit, this is not
+/config/master.key
+
+# Editors / os
+.DS_Store
+*.swp

@@ -1,0 +1,48 @@
+<% content_for :title, "検索" %>
+<div class="page" data-controller="live">
+  <h1 class="page-title">検索</h1>
+  <%= form_with url: search_path, method: :get, local: true, class: "search-form" do %>
+    <%= text_field_tag :q, @query, placeholder: "投稿やプロフィールを検索",
+          class: "search-input", autofocus: @query.blank?, enterkeyhint: "search" %>
+    <md-filled-button type="submit" aria-label="検索">
+      <span class="msr" slot="icon">search</span>
+    </md-filled-button>
+  <% end %>
+
+  <% if @query.present? %>
+    <% if @profiles.empty? && @notes.empty? %>
+      <div class="empty-state">
+        <span class="msr empty-state__icon">search_off</span>
+        <p class="empty-state__title">「<%= @query %>」に一致するものがありません</p>
+        <p class="empty-state__body">nostrd が取り込んだ投稿とプロフィールが検索対象です。</p>
+      </div>
+    <% else %>
+      <% unless @profiles.empty? %>
+        <h2 class="section-title">プロフィール</h2>
+        <div class="profile-list">
+          <% @profiles.each do |p| %>
+            <a class="profile-row" href="<%= profile_path(p["pubkey"]) %>">
+              <span class="msr profile-row__avatar">account_circle</span>
+              <span class="profile-row__body">
+                <span class="profile-row__name"><%= p["display_name"].presence || p["name"].presence || short_pubkey(p["pubkey"]) %></span>
+                <span class="profile-row__sub"><%= p["nip05"].presence || short_pubkey(p["pubkey"]) %></span>
+              </span>
+            </a>
+          <% end %>
+        </div>
+      <% end %>
+      <% unless @notes.empty? %>
+        <h2 class="section-title">投稿</h2>
+        <div class="feed feed--search">
+          <%= render partial: "notes/card", collection: @notes, as: :note %>
+        </div>
+      <% end %>
+    <% end %>
+  <% else %>
+    <div class="empty-state">
+      <span class="msr empty-state__icon">search</span>
+      <p class="empty-state__title">キーワードで検索</p>
+      <p class="empty-state__body">nostrd が取り込んだ投稿とプロフィールを検索できます。</p>
+    </div>
+  <% end %>
+</div>

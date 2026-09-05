@@ -1,0 +1,13 @@
+<%# One timeline card: surface box, 28dp radius, header row on top,
+    content centered. The box itself has no behavior of its own — the
+    avatar/name lead to the profile, the text to the note detail. %>
+<article class="note-card" data-note-id="<%= note["id"] %>" data-pubkey="<%= note["pubkey"] %>">
+  <div class="note-card__head">
+    <md-icon-button class="note-card__avatar" href="<%= profile_path(note["pubkey"]) %>" aria-label="<%= display_name(note["pubkey"]) %> のプロフィール">
+      <span class="msr msr--outline">account_circle</span>
+    </md-icon-button>
+    <span class="note-card__author" data-profile-name><%= display_name(note["pubkey"]) %></span>
+    <span class="note-card__time"><%= rel_time(note["created_at"]) %></span>
+  </div>
+  <a class="note-card__text" href="<%= note_path(note["id"]) %>"><%= note_content(note["content"]) %></a>
+</article>

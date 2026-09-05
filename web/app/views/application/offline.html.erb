@@ -1,0 +1,9 @@
+<div class="empty-state empty-state--page">
+  <span class="msr empty-state__icon">cloud_off</span>
+  <p class="empty-state__title">nostrd に接続できません</p>
+  <p class="empty-state__body">
+    <%= @error_message || "nostrd デーモンが起動しているか確認してください。" %><br>
+    ソケット: <code><%= nostrd.socket_path %></code>
+  </p>
+  <md-filled-button onclick="location.reload()">再試行</md-filled-button>
+</div>

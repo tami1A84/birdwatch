@@ -1,0 +1,44 @@
+<% content_for :title, "フォロー" %>
+<div class="page">
+  <h1 class="page-title">フォロー</h1>
+
+  <div class="add-box">
+    <%= form_with url: follows_create_path, method: :post, class: "add-form" do %>
+      <%= text_field_tag :pubkey, nil, placeholder: "公開鍵（64桁のhex）",
+            required: true, pattern: "[0-9a-fA-F]{64}", class: "add-form__input",
+            autocomplete: "off", spellcheck: "false" %>
+      <md-filled-button type="submit">
+        <span class="msr" slot="icon">person_add</span>
+        追加
+      </md-filled-button>
+    <% end %>
+  </div>
+
+  <% if @follows.empty? %>
+    <div class="empty-state">
+      <span class="msr empty-state__icon">group</span>
+      <p class="empty-state__title">フォローはまだありません</p>
+      <p class="empty-state__body">公開鍵を追加するか、プロフィール画面からフォローできます。</p>
+    </div>
+  <% else %>
+    <div class="follow-list">
+      <% @follows.each do |pk| %>
+        <% p = @profiles[pk] %>
+        <div class="follow-row" data-pubkey="<%= pk %>">
+          <a class="profile-row" href="<%= profile_path(pk) %>">
+            <span class="msr profile-row__avatar">account_circle</span>
+            <span class="profile-row__body">
+              <span class="profile-row__name" data-profile-name><%= p && (p["display_name"].presence || p["name"].presence) || short_pubkey(pk) %></span>
+              <span class="profile-row__sub"><%= p && p["nip05"].presence || short_pubkey(pk) %></span>
+            </span>
+          </a>
+          <%= button_to follows_destroy_path, method: :post, params: { pubkey: pk },
+                class: "unfollow-button",
+                form: { data: { confirm: "#{display_name(pk)} のフォローを解除しますか？", confirm_title: "フォロー解除" } } do %>
+            <span class="msr" slot="icon">person_remove</span>
+          <% end %>
+        </div>
+      <% end %>
+    </div>
+  <% end %>
+</div>

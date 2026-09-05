@@ -1,0 +1,55 @@
+<% content_for :title, "リレー" %>
+<div class="page">
+  <h1 class="page-title">リレー</h1>
+
+  <div class="add-box">
+    <%= form_with url: relays_create_path, method: :post, class: "add-form" do %>
+      <%= url_field_tag :url, nil, placeholder: "wss://relay.example.com",
+            required: true, class: "add-form__input", autocomplete: "off", spellcheck: "false" %>
+      <md-filled-button type="submit">
+        <span class="msr" slot="icon">add_link</span>
+        追加
+      </md-filled-button>
+    <% end %>
+    <%= button_to relays_advertise_path, method: :post, class: "advertise-button",
+          form: { data: { confirm: "現在のスイッチ状態でリレーリスト（NIP-65）を公開しますか？", confirm_title: "リレーリストの公開" } } do %>
+      <span class="msr" slot="icon">publish</span>
+      公開
+    <% end %>
+  </div>
+
+  <% if @relays.empty? %>
+    <div class="empty-state">
+      <span class="msr empty-state__icon">language</span>
+      <p class="empty-state__title">リレーが未設定です</p>
+      <p class="empty-state__body">nostrd を起動してリレーを追加してください。</p>
+    </div>
+  <% else %>
+    <div class="relay-list">
+      <% @relays.each do |r| %>
+        <div class="relay-row">
+          <div class="relay-row__head">
+            <span class="relay-row__url"><%= r["url"] %></span>
+            <span class="state-badge state-badge--<%= r["state"] %>"><%= r["state"] == "connected" ? "接続中" : "切断" %></span>
+          </div>
+          <form method="post" action="<%= relays_flags_path %>" class="relay-flags">
+            <input type="hidden" name="authenticity_token" value="<%= form_authenticity_token %>">
+            <input type="hidden" name="url" value="<%= r["url"] %>">
+            <label class="relay-flag"><input type="checkbox" name="read" <%= "checked" if r["read"] %>><span>read</span></label>
+            <label class="relay-flag"><input type="checkbox" name="write" <%= "checked" if r["write"] %>><span>write</span></label>
+            <label class="relay-flag"><input type="checkbox" name="inbox" <%= "checked" if r["inbox"] %>><span>inbox</span></label>
+            <label class="relay-flag"><input type="checkbox" name="outbox" <%= "checked" if r["outbox"] %>><span>outbox</span></label>
+            <label class="relay-flag"><input type="checkbox" name="discover" <%= "checked" if r["discover"] %>><span>discover</span></label>
+            <label class="relay-flag"><input type="checkbox" name="search" <%= "checked" if r["search"] %>><span>search</span></label>
+            <md-text-button type="submit">保存</md-text-button>
+          </form>
+          <%= button_to relays_destroy_path, method: :post, params: { url: r["url"] },
+                class: "relay-remove",
+                form: { data: { confirm: "#{r["url"]} を削除しますか？", confirm_title: "リレーの削除" } } do %>
+            <span class="msr" slot="icon">delete</span>
+          <% end %>
+        </div>
+      <% end %>
+    </div>
+  <% end %>
+</div>

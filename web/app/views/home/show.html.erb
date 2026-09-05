@@ -1,0 +1,36 @@
+<div class="feed" data-controller="live">
+  <% if @notes.empty? %>
+    <div class="empty-state">
+      <span class="msr empty-state__icon">forum</span>
+      <% if @connected && !@ready %>
+        <p class="empty-state__title">読み込み中…</p>
+        <p class="empty-state__body">nostrd からタイムラインを取得しています。</p>
+      <% else %>
+        <p class="empty-state__title">まだ投稿がありません</p>
+        <p class="empty-state__body">フォローしたアカウントの投稿や、自分の投稿がここに表示されます。</p>
+      <% end %>
+    </div>
+  <% else %>
+    <%= render partial: "notes/card", collection: @notes, as: :note %>
+  <% end %>
+</div>
+
+<md-fab class="compose-fab" variant="primary" size="medium"
+        data-controller="compose" data-action="click->compose#open" aria-label="新規投稿">
+  <span class="msr" slot="icon">add</span>
+</md-fab>
+
+<md-dialog id="compose-dialog" class="compose-dialog">
+  <div slot="headline">新規投稿</div>
+  <div slot="content">
+    <%= form_with url: notes_path, method: :post, id: "compose-form" do |f| %>
+      <%= text_area_tag :text, nil, rows: 4, maxlength: 280, required: true,
+            placeholder: "いま何をしている？", class: "compose-textarea",
+            data: { compose_target: "text" } %>
+    <% end %>
+  </div>
+  <div slot="actions">
+    <md-text-button data-action="click->compose#close">キャンセル</md-text-button>
+    <md-filled-button form="compose-form" type="submit" data-compose-submit>投稿</md-filled-button>
+  </div>
+</md-dialog>

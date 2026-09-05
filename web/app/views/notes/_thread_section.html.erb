@@ -1,0 +1,60 @@
+<%# Comments (NIP-22) + reactions (NIP-25) + actions under a note detail.
+    Refreshed live by the SSE controller via /notes/:id/section. %>
+<div class="thread-section" data-thread-section>
+  <div class="note-actions">
+    <% mine = me_info["me"] == @note["pubkey"] %>
+    <form method="post" action="<%= note_like_path(@note["id"]) %>" class="note-actions__form">
+      <input type="hidden" name="authenticity_token" value="<%= form_authenticity_token %>">
+      <md-icon-button type="submit" class="like-button <%= "like-button--liked" if @reactions.any? { |r| r["pubkey"] == me_info["me"] } %>"
+                      aria-label="いいね">
+        <span class="msr">thumb_up</span>
+      </md-icon-button>
+    </form>
+    <span class="note-actions__count"><%= @reactions.size %></span>
+
+    <button type="button" class="fav-toggle" data-fav-toggle="<%= @note["id"] %>" aria-label="お気に入り">
+      <span class="msr">star</span>
+    </button>
+
+    <% if mine %>
+      <form method="post" action="<%= note_destroy_path(@note["id"]) %>" data-confirm="この投稿を削除しますか？" data-confirm-title="投稿の削除" class="note-actions__form note-actions__form--end">
+        <input type="hidden" name="authenticity_token" value="<%= form_authenticity_token %>">
+        <md-text-button type="submit" class="danger-button">
+          <span class="msr" slot="icon">delete</span>
+          削除
+        </md-text-button>
+      </form>
+    <% end %>
+  </div>
+
+  <h2 class="section-title">返信 <span class="section-title__count"><%= @comments.size %></span></h2>
+
+  <div class="reply-box">
+    <%= form_with url: note_comments_path(@note["id"]), method: :post, class: "reply-form" do %>
+      <%= text_area_tag :text, nil, rows: 2, maxlength: 280, required: true,
+            placeholder: "返信を書く…", class: "compose-textarea compose-textarea--compact" %>
+      <md-filled-button type="submit" class="reply-form__submit">返信</md-filled-button>
+    <% end %>
+  </div>
+
+  <% if @comments.empty? %>
+    <div class="empty-state empty-state--compact">
+      <p class="empty-state__body">まだ返信はありません</p>
+    </div>
+  <% else %>
+    <div class="comments">
+      <% @comments.each do |c| %>
+        <article class="note-card note-card--comment" data-note-id="<%= c["id"] %>" data-pubkey="<%= c["pubkey"] %>">
+          <div class="note-card__head">
+            <md-icon-button class="note-card__avatar" href="<%= profile_path(c["pubkey"]) %>" aria-label="プロフィール">
+              <span class="msr msr--outline">account_circle</span>
+            </md-icon-button>
+            <span class="note-card__author note-card__author--small" data-profile-name><%= display_name(c["pubkey"]) %></span>
+            <span class="note-card__time"><%= rel_time(c["created_at"]) %></span>
+          </div>
+          <div class="note-card__text note-card__text--static note-card__text--comment"><%= note_content(c["content"]) %></div>
+        </article>
+      <% end %>
+    </div>
+  <% end %>
+</div>

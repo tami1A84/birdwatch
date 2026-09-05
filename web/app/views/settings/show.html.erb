@@ -1,0 +1,89 @@
+<% content_for :title, "設定" %>
+<div class="page">
+  <h1 class="page-title">設定</h1>
+
+  <section class="settings-card">
+    <h2 class="settings-card__title">アカウント</h2>
+    <% if @me %>
+      <div class="settings-row">
+        <span class="settings-row__label">公開鍵</span>
+        <code class="settings-row__value settings-row__value--mono"><%= @me %></code>
+      </div>
+      <% if @my_profile["display_name"].present? || @my_profile["name"].present? %>
+        <div class="settings-row">
+          <span class="settings-row__label">名前</span>
+          <span class="settings-row__value"><%= @my_profile["display_name"].presence || @my_profile["name"] %></span>
+        </div>
+      <% end %>
+    <% else %>
+      <p class="settings-card__body">nostrd に接続できていません。</p>
+    <% end %>
+    <div class="settings-row">
+      <span class="settings-row__label">署名</span>
+      <span class="settings-row__value"><%= @locked ? "ロック中" : "準備完了" %></span>
+    </div>
+  </section>
+
+  <section class="settings-card">
+    <h2 class="settings-card__title">プロフィール</h2>
+    <%= form_with url: settings_profile_path, method: :post, class: "settings-form" do %>
+      <label class="field">
+        <span class="field__label">ユーザー名</span>
+        <%= text_field_tag :name, @my_profile["name"], class: "field__input", maxlength: 64 %>
+      </label>
+      <label class="field">
+        <span class="field__label">表示名</span>
+        <%= text_field_tag :display_name, @my_profile["display_name"], class: "field__input", maxlength: 64 %>
+      </label>
+      <label class="field">
+        <span class="field__label">NIP-05</span>
+        <%= text_field_tag :nip05, @my_profile["nip05"], class: "field__input", placeholder: "you@example.com" %>
+      </label>
+      <label class="field">
+        <span class="field__label">アイコンURL</span>
+        <%= url_field_tag :picture, @my_profile["picture"], class: "field__input", placeholder: "https://…" %>
+      </label>
+      <label class="field">
+        <span class="field__label">自己紹介</span>
+        <%= text_area_tag :about, @my_profile["about"], rows: 3, class: "field__input field__input--area", maxlength: 1024 %>
+      </label>
+      <md-filled-button type="submit">保存</md-filled-button>
+    <% end %>
+  </section>
+
+  <section class="settings-card">
+    <h2 class="settings-card__title">ロック</h2>
+    <% if @locked %>
+      <%= form_with url: settings_unlock_path, method: :post, class: "settings-form" do %>
+        <label class="field">
+          <span class="field__label">パスフレーズ</span>
+          <%= password_field_tag :passphrase, nil, class: "field__input", required: true, autocomplete: "current-password" %>
+        </label>
+        <md-filled-button type="submit">
+          <span class="msr" slot="icon">lock_open</span>
+          ロック解除
+        </md-filled-button>
+      <% end %>
+    <% else %>
+      <p class="settings-card__body">ロックすると、パスフレーズを再入力するまでデーモンは署名しなくなります。</p>
+      <%= button_to settings_lock_path, method: :post, class: "danger-button",
+            form: { data: { confirm: "デーモンをロックしますか？", confirm_title: "ロック" } } do %>
+        <span class="msr" slot="icon">lock</span>
+        ロック
+      <% end %>
+    <% end %>
+  </section>
+
+  <section class="settings-card">
+    <h2 class="settings-card__title">デーモン</h2>
+    <div class="settings-row">
+      <span class="settings-row__label">フォロー</span>
+      <span class="settings-row__value"><%= @follow_count %> 人</span>
+    </div>
+    <div class="settings-row">
+      <span class="settings-row__label">リレー</span>
+      <span class="settings-row__value"><%= @relay_count %> 件</span>
+    </div>
+    <p class="settings-card__body settings-card__body--muted">nostrd のソケット: <code><%= nostrd.socket_path %></code></p>
+  </section>
+</div>
