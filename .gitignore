@@ -1,0 +1,19 @@
+# daemon / client local state — live outside the repo, but just in case
+*.db
+*.db-shm
+*.db-wal
+*.sock
+vault
+vault.*
+daemon.log
+daemon.pid
+
+# ruby
+/vendor/
+/.bundle/
+*.gem
+
+# editors / os
+.DS_Store
+*.swp
+*.swo

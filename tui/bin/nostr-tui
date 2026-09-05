@@ -1,0 +1,36 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "optparse"
+require "shellwords"
+require_relative "../lib/nostr_tui/ndjson"
+require_relative "../lib/nostr_tui/timeline"
+require_relative "../lib/nostr_tui/renderer"
+require_relative "../lib/nostr_tui/socket_client"
+require_relative "../lib/nostr_tui/app"
+
+options = { socket: "/tmp/nostrd-dev.sock", demo: false }
+OptionParser.new do |o|
+  o.on("--socket PATH") { |v| options[:socket] = v }
+  o.on("--demo", "render sample data without a daemon (needs a TTY to see it)") { options[:demo] = true }
+end.parse!
+
+timeline = NostrTui::Timeline.new
+client = nil
+
+if options[:demo]
+  now = Time.now.to_i
+  %w[algia 湊A リレー観測塔].each_with_index do |name, i|
+    timeline.add_h({ "id" => "demo_#{i}", "pubkey" => "#{name}_" + ("0" * 40),
+                     "created_at" => now - i * 300,
+                     "kind" => 1, "content" => ["omarchy は軽い", "unix socket は速い", "被覆 98%"][i % 3], "tags" => [] })
+  end
+else
+  client = NostrTui::SocketClient.new(options[:socket])
+  abort "nostrd not reachable at #{options[:socket]} (start it with: nostrd --mock)" unless client.connect
+  client.subscribe_timeline
+  client.request_info # SSS header: follows + relays
+end
+
+NostrTui::App.new(timeline: timeline).run(client: client)
+client&.close

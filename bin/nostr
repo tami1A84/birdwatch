@@ -1,0 +1,145 @@
+#!/usr/bin/env bash
+# nostr — one command for the whole stack.
+#
+#   nostr            daemon up (starts it if needed) -> TUI in this terminal
+#   nostr --stop     stop the daemon (only ever kills ruby processes)
+#   nostr --status   is the daemon alive?
+#   nostr --logs     tail the daemon log
+#   nostr --setup    log in with your existing key (imports nsec, then exits)
+#   nostr --newkey   create a fresh key (writes the vault, then exits)
+#
+# The daemon keeps running after the TUI exits, so the next `nostr` is
+# instant and there is only ever one daemon for the whole desktop.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DAEMON="$ROOT/nostrd/bin/nostrd"
+TUI="$ROOT/tui/bin/nostr-tui"
+
+RUN="${XDG_RUNTIME_DIR:-/tmp}"
+SOCKET="${NOSTRD_SOCKET:-$RUN/nostrd.sock}"
+VAULT="${NOSTRD_VAULT:-$HOME/.config/nostrd/vault}"
+DB="${NOSTRD_DB:-$HOME/.local/share/nostrd/nostrd.db}"
+CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/nostrd"
+LOG="$CACHE/daemon.log"
+PIDFILE="$CACHE/daemon.pid"
+
+alive() { # socket ping/pong with a 2s timeout
+  ruby -rsocket -rjson -e '
+    s = UNIXSocket.new(ARGV[0])
+    s.write(JSON.generate(op: "ping") + "\n")
+    exit(1) unless IO.select([s], nil, nil, 2)
+    exit(s.gets.to_s.include?("pong") ? 0 : 1)
+  ' "$SOCKET" 2>/dev/null
+}
+
+nostrd_pids() { # every ruby process running bin/nostrd — never matches by name
+  local pid
+  for d in /proc/[0-9]*; do
+    pid=${d#/proc/}
+    [[ "$(cat "$d/comm" 2>/dev/null)" == "ruby" ]] || continue
+    tr '\0' ' ' <"$d/cmdline" 2>/dev/null | grep -q 'bin/nostrd' && echo "$pid"
+  done || true
+}
+
+start_daemon() {
+  mkdir -p "$CACHE" "$(dirname "$DB")" "$(dirname "$VAULT")"
+
+  if [[ ! -f "$VAULT" ]]; then
+    echo "no vault at $VAULT — log in first:"
+    echo "  nostr --setup     (use your existing nsec)"
+    echo "  nostr --newkey    (create a fresh identity)"
+    exit 1
+  fi
+
+  local pass="${NOSTRD_PASSPHRASE:-}"
+  if [[ -z "$pass" ]]; then
+    if [[ ! -t 0 ]]; then
+      echo "cannot prompt for the vault passphrase (no tty); set NOSTRD_PASSPHRASE" >&2
+      exit 1
+    fi
+    read -rs -p "vault passphrase: " pass
+    echo
+    [[ -n "$pass" ]] || exit 1
+  fi
+
+  local extra=()
+  if [[ -n "${NOSTRD_RELAYS:-}" ]]; then
+    for r in $NOSTRD_RELAYS; do extra+=("--relay" "$r"); done
+  fi
+
+  echo "starting nostrd on $SOCKET ..."
+  # Passphrase rides an inherited fd (bash here-string temp, unlinked) —
+  # never lands in the daemon's argv or /proc/PID/environ.
+  nohup "$DAEMON" \
+    --passphrase-fd 3 \
+    --live --socket "$SOCKET" --vault "$VAULT" --db "$DB" \
+    "${extra[@]}" >>"$LOG" 2>&1 </dev/null 3<<<"$pass" &
+  echo $! >"$PIDFILE"
+
+  local i
+  for i in $(seq 1 20); do
+    alive && return 0
+    kill -0 "$(cat "$PIDFILE")" 2>/dev/null || break # daemon died
+    sleep 0.5
+  done
+  echo "nostrd did not come up — last log lines:" >&2
+  tail -n 15 "$LOG" >&2
+  exit 1
+}
+
+case "${1:-}" in
+--stop)
+  pids="$(nostrd_pids)"
+  if [[ -z "$pids" ]]; then
+    echo "nostrd is not running"
+  else
+    kill $pids 2>/dev/null || true
+    for i in $(seq 1 10); do
+      [[ -z "$(nostrd_pids)" ]] && break
+      sleep 0.3
+    done
+    for p in $(nostrd_pids); do kill -9 "$p" 2>/dev/null || true; done
+    echo "nostrd stopped ($(echo $pids | tr ' ' '\n' | wc -l) process(es))"
+  fi
+  rm -f "$PIDFILE"
+  ;;
+--status)
+  if alive; then
+    echo "nostrd running (socket $SOCKET)"
+  else
+    echo "nostrd not reachable (socket $SOCKET)"
+    exit 1
+  fi
+  ;;
+--logs)
+  mkdir -p "$CACHE"; touch "$LOG"
+  exec tail -n 80 -f "$LOG"
+  ;;
+--setup)
+  exec "$DAEMON" --socket "$SOCKET" --vault "$VAULT" --db "$DB" --import-nsec --setup-only
+  ;;
+--newkey)
+  exec "$DAEMON" --socket "$SOCKET" --vault "$VAULT" --db "$DB" --new-key --setup-only
+  ;;
+--help|-h)
+  sed -n '2,13p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  ;;
+"")
+  if ! alive; then
+    if [[ -n "$(nostrd_pids)" ]]; then
+      echo "a nostrd process is running but $SOCKET is dead." >&2
+      echo "It is probably serving another socket; stop it first:  nostr --stop" >&2
+      echo "(or point this launcher at it:  NOSTRD_SOCKET=/path/to.sock nostr)" >&2
+      exit 1
+    fi
+    start_daemon
+    echo "nostrd up — log: $LOG"
+  fi
+  exec "$TUI" --socket "$SOCKET"
+  ;;
+*)
+  echo "unknown option: $1 (try --help)" >&2
+  exit 1
+  ;;
+esac

@@ -1,0 +1,261 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "optparse"
+require_relative "../lib/nostr_core/bech32"
+require_relative "../lib/nostrd/store"
+require_relative "../lib/nostrd/server"
+require_relative "../lib/nostrd/signer"
+require_relative "../lib/nostrd/nip46"
+
+options = {
+  socket: File.join(ENV.fetch("XDG_RUNTIME_DIR", "/tmp"), "nostrd.sock"),
+  db: File.expand_path("~/.local/share/nostrd/nostrd.db"),
+  mock: false, live: false,
+  relays: %w[wss://relay.damus.io wss://nos.lol wss://relay.nostr.band],
+  follows: []
+}
+OptionParser.new do |o|
+  o.on("--socket PATH") { |v| options[:socket] = v }
+  o.on("--db PATH") { |v| options[:db] = v }
+  o.on("--vault PATH", "encrypted nsec vault (NIP-49 style)") { |v| options[:vault] = v }
+  o.on("--mock", "seed sample events, in-memory store, for TUI testing") do
+    options[:mock] = true
+    options[:db] = ":memory:"
+    options[:socket] = "/tmp/nostrd-dev.sock"
+  end
+  o.on("--live", "dial real relays (needs: gem install websocket-client-simple)") { options[:live] = true }
+  o.on("--relay URL", "relay to dial in --live mode (repeatable)") { |v| options[:relays] << v }
+  o.on("--follow PK1,PK2", "pubkeys to follow in --live mode") do |v|
+    options[:follows] = v.split(",").map(&:strip)
+  end
+  o.on("--history N", Integer, "timeline replay size served to clients (default 100)") do |v|
+    options[:history] = v
+  end
+  o.on("--passphrase-fd N", Integer,
+       "read the vault passphrase from this inherited fd (never argv/env)") { |v| options[:passphrase_fd] = v }
+  o.on("--new-key", "create a fresh key, write the vault, print pubkey/npub") do
+    options[:new_key] = true
+  end
+  o.on("--import-nsec", "log in with your existing key: prompts for nsec (hidden input)") do
+    options[:import_nsec] = true
+  end
+  o.on("--setup-only", "with --new-key/--import-nsec: create the vault, print the pubkey, exit") do
+    options[:setup_only] = true
+  end
+  o.on("--force", "overwrite an existing vault") { options[:force] = true }
+  o.on("--upgrade-vault", "convert the vault file to official NIP-49 ncryptsec and exit") do
+    options[:upgrade_vault] = true
+  end
+end.parse!
+
+require "fileutils"
+FileUtils.mkdir_p(File.dirname(options[:db])) unless options[:db] == ":memory:"
+
+store = Nostrd::Store.new(options[:db])
+
+if options[:mock]
+  now = Time.now.to_i
+  authors = %w[a b c d].map { |c| "pk_#{c}" * 16 }
+  6.times do |i|
+    store.upsert_event(NostrCore::Event.new(
+      id: "mock_#{i}_#{now}", pubkey: authors[i % authors.size],
+      created_at: now - i * 120, kind: 1,
+      content: [" moo from mock relay", " X220 のファンが静かだ", " リレー被覆テスト中", " gdbus じゃなくて unix socket でいい"][i % 4]
+    ))
+  end
+end
+
+signer = options[:vault] ? Nostrd::Signer.new(vault_path: options[:vault]) : Nostrd::Signer.new
+
+# Passphrase handling: NOSTRD_PASSPHRASE (env) > interactive hidden prompt.
+# The secret key itself never touches disk unencrypted — only inside the
+# scrypt/AES vault blob, and only in process memory while unlocked.
+def ask_pass(prompt = "vault passphrase: ", confirm: false)
+  require "io/console"
+  $stdout.print prompt
+  pass = $stdin.noecho(&:gets)&.chomp
+  $stdout.puts
+  abort "empty passphrase" if pass.to_s.empty?
+  if confirm
+    $stdout.print "confirm passphrase: "
+    again = $stdin.noecho(&:gets)&.chomp
+    $stdout.puts
+    abort "passphrases do not match" unless pass == again
+  end
+  pass
+end
+
+def ask_nsec
+  return ENV["NOSTRD_NSEC"] if ENV["NOSTRD_NSEC"] # for headless provisioning
+
+  require "io/console"
+  $stdout.print "nsec (nsec1… or hex, hidden input): "
+  s = $stdin.noecho(&:gets)&.chomp
+  $stdout.puts
+  abort "no nsec entered" if s.to_s.empty?
+  s
+end
+
+if options[:vault]
+  if options[:new_key] || options[:import_nsec] # first login / key import
+    if File.exist?(options[:vault]) && !options[:force]
+      warn "vault already exists at #{options[:vault]} (use --force to replace)"; exit 1
+    end
+    begin
+      hex = options[:import_nsec] ? NostrCore::Bech32.nsec_to_hex(ask_nsec) : nil
+      pass = ENV["NOSTRD_PASSPHRASE"] ? ENV["NOSTRD_PASSPHRASE"] : ask_pass(confirm: true)
+      signer.create_key(passphrase: pass, seckey_hex: hex)
+    rescue ArgumentError, StandardError => e
+      warn "vault creation failed: #{e.message}"
+      exit 1
+    end
+    warn "vault created at #{options[:vault]} (0600)"
+    warn "pubkey: #{signer.pubkey}"
+    warn "npub:   #{NostrCore::Bech32.hex_to_npub(signer.pubkey)}"
+    exit 0 if options[:setup_only]
+  else
+    File.umask(0077) # db/wal/shm and any other files stay owner-only
+    # Passphrase via inherited fd (recommended; never lands in argv/environ),
+    # then env (legacy), then tty prompt.
+    pass = options[:passphrase_fd] && IO.for_fd(options[:passphrase_fd]).read.chomp
+    pass ||= ENV["NOSTRD_PASSPHRASE"]
+    pass ||= ask_pass if $stdin.tty?
+    if pass
+      if File.exist?(options[:vault])
+        begin
+          signer.unlock(pass)
+          warn "signer unlocked: #{signer.pubkey[0, 16]}"
+        rescue ArgumentError => e
+          warn "vault unlock failed: #{e.message}"
+          exit 1
+        end
+        if options[:upgrade_vault]
+          signer.resave(pass)
+          warn "vault upgraded to official NIP-49 (ncryptsec) at #{options[:vault]}"
+          exit 0
+        end
+      else
+        signer.create_key(passphrase: pass)
+        warn "vault created at #{options[:vault]}: #{signer.pubkey[0, 16]}"
+      end
+    else
+      warn "no passphrase available (set NOSTRD_PASSPHRASE or run in a tty); signer stays locked"
+    end
+  end
+end
+# --- live relay machine: pool + orchestrator + tick loop -------------------
+if options[:live]
+  require_relative "../lib/nostrd/relay_pool"
+  require_relative "../lib/nostrd/orchestrator"
+  require_relative "../lib/nostrd/live_feed"
+
+  server = nil # assigned below; lambdas broadcast through it
+  # Live home feed gate. Own signed events arrive with symbol keys, relay
+  # JSON with string keys — LiveFeed normalizes both, keeps kind 1 + 1111,
+  # and suppresses the relay echo of an event already sent to clients.
+  feed = Nostrd::LiveFeed.new { |ev| server&.broadcast_event(ev) }
+
+  orchestrator = nil
+  pool = Nostrd::RelayPool.new(
+    on_event: ->(url, ev) {
+      orchestrator&.ingest(url, ev)
+      if ev.is_a?(Hash) && ev["kind"] == 0 && ev["pubkey"]
+        # A profile just landed (seek result): push it so names appear
+        # without the client reconnecting. No-op while it has no fields.
+        server&.broadcast_profile(ev["pubkey"])
+      end
+      feed.push(ev) # live feed: followed people + own posts echoed back
+    },
+    # Deferred: transmit() under the orchestrator mutex can synchronously
+    # trigger on_close -> drop on a dead transport; relay_failed must never
+    # re-enter the non-reentrant lock on the same thread.
+    on_disconnect: ->(url, _penalty) { Thread.new { orchestrator&.relay_failed(url) } },
+    on_publish_result: ->(url, _id, ok, _msg) { store.record_relay_result(url, success: ok) }
+  )
+  # NIP-42: answer relay AUTH challenges with a signed kind 22242 event.
+  pool.auth_with { |challenge, url| signer.auth_event(challenge, url) }
+  # Publish path: sign (oracle) -> ["EVENT",..] to connected relays -> keep own copy.
+  publisher = lambda do |event|
+    write = orchestrator&.write_relays || []
+    targets = write.empty? ? nil : (pool.connections.keys & write)
+    targets = nil if targets&.empty?
+    if targets.nil? && write.any?
+      warn "publish: #{write.size} write relays known, none connected - broadcasting"
+    end
+    urls = pool.publish(event, urls: targets)
+    if urls.any?
+      store.upsert_event(NostrCore::Event.from_h(event))
+      feed.push(event) # self-echo: home updates the moment we post
+    end
+    urls
+  end
+  orchestrator = Nostrd::Orchestrator.new(
+    store: store, picker: NostrCore::RelayPicker.new,
+    pool: pool, my_pubkey: signer.pubkey
+  )
+  # --follow args are merged with follows persisted in the DB (survive restarts)
+  f = (options[:follows] + store.follows).uniq
+  orchestrator.follow(*f) unless f.empty?
+  # Off-main: each dial waits up to 5s on the handshake gate and dead relays
+  # raise into the penalty box — a hung dial must not block the others, so
+  # isolate each one.
+  options[:relays].each { |url| Thread.new { pool.connect(url) } }
+  Thread.new do
+    loop do
+      orchestrator.tick # tick first: seeks + subscriptions start immediately
+      sleep 30
+    rescue StandardError => e
+      warn "tick: #{e.class}: #{e.message}"
+    end
+  end
+end
+
+server = Nostrd::Server.new(store: store, socket_path: options[:socket], signer: signer,
+                            publisher: (publisher if options[:live]),
+                            history: options[:history] || 100,
+                            # Gossip relay switches: local-only merge (inbox=>read, outbox=>write).
+                            relay_flags: ->(p) {
+                              o = orchestrator
+                              o ? o.set_relay_flags(p["url"],
+                                                    read: p["read"] == true, inbox: p["inbox"] == true,
+                                                    write: p["write"] == true, outbox: p["outbox"] == true,
+                                                    discover: p["discover"] == true,
+                                                    search: p["search"] == true) : p
+                            },
+                            # TUI relay management (add rides relay_flags).
+                            relay_remove: ->(url) { orchestrator&.remove_my_relay(url) },
+  lock: -> { signer&.lock },
+  unlock: ->(pass) { signer.unlock(pass) },
+  import_key: ->(key, pass) {
+    hex = key.start_with?("nsec") ? NostrCore::Bech32.nsec_to_hex(key) : key
+    raise ArgumentError, "key must be nsec1… or 64 hex chars" unless hex =~ /\A[0-9a-f]{64}\z/
+
+    signer.create_key(passphrase: pass, seckey_hex: hex)
+  },
+                            # Advertise Relay List: sign + publish kind 10002 from switch state.
+                            advertise_relays: -> {
+                              o = orchestrator
+                              next {} unless o
+                              relays = o.advertised_relay_list
+                              event = signer.call("update_relay_list", { "relays" => relays })
+                              published = publisher ? publisher.call(event) : []
+                              { "relays" => relays, "event_id" => event.is_a?(Hash) ? event[:id] : nil,
+                                "published_to" => published.size }
+                            },
+                            info: -> {
+                              follows = (orchestrator&.followed || []).dup
+                              { "follows" => follows,
+                                # The TUI marks reactions it already made.
+                                "me" => orchestrator&.pubkey,
+                                "locked" => signer.locked?,
+                                "my_profile" => (pk = orchestrator&.pubkey) ? store.profile_for(pk) : nil,
+                                "relays" => (orchestrator&.relay_status || []),
+                                # Names for the SSS follows tab: metadata for
+                                # nearly everyone is already in the DB, so
+                                # serve it with the list instead of waiting
+                                # for kind-0 arrivals that may never come.
+                                "profiles" => store.profiles_for(follows).values }
+                            })
+trap("INT") { exit 0 }
+server.run
