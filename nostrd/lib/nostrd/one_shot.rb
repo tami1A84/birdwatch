@@ -87,6 +87,7 @@ module Nostrd
       return tcp if uri.scheme == "ws"
 
       tls = OpenSSL::SSL::SSLSocket.new(tcp)
+      tls.hostname = uri.host # SNI — Cloudflare-fronted relays reject without it
       tls.sync_close = true
       tls.connect
       tls
