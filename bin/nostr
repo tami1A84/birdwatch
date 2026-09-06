@@ -153,7 +153,7 @@ case "${1:-}" in
   # NIP-5A named site: hashes + uploads a static dir to Blossom (auth
   # signed by the daemon), then signs+publishes the kind 35128 manifest.
   alive || { echo "nostrd not reachable (socket $SOCKET) — start it first: nostr" >&2; exit 1; }
-  exec "$ROOT/nostrd/bin/nostr-nsite" --socket "$SOCKET" "$@"
+  exec "$ROOT/nostrd/bin/nostr-nsite" --socket "$SOCKET" "${@:2}"
   ;;
 --setup)
   exec "$DAEMON" --socket "$SOCKET" --vault "$VAULT" --db "$DB" --import-nsec --setup-only
