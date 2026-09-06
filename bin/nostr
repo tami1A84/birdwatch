@@ -124,7 +124,8 @@ case "${1:-}" in
   # bunker.json; these ops go over the socket like everything else.
   alive || { echo "nostrd not reachable (socket $SOCKET) — start it first: nostr" >&2; exit 1; }
   op_id="b1"
-  op_json='{"op":"'"${1#--}"'","id":"'"$op_id"'"}'
+  op_name="${1#--}"; op_name="${op_name//-/_}" # daemon socket ops use underscores (bunker_secret)
+  op_json='{"op":"'"$op_name"'","id":"'"$op_id"'"}'
   if [[ "$1" == "--bunker-forget" ]]; then
     [[ -n "${2:-}" ]] || { echo "usage: nostr --bunker-forget <client-pubkey-hex>" >&2; exit 1; }
     op_json=$(ruby -rjson -e 'print JSON.generate(op: "bunker_forget", id: "b9", params: { client: ARGV[0] })' "$2")
