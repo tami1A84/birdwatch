@@ -1,0 +1,15 @@
+{
+  "name": "birdwatch-nsite",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "esbuild src/main.js --bundle --format=esm --minify --outfile=dist/app.js",
+    "test": "node test/integration.mjs"
+  },
+  "dependencies": {
+    "nostr-tools": "^2.10.4"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0"
+  }
+}

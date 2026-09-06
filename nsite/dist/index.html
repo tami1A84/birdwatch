@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>birdwatch</title>
+  <meta name="theme-color" content="#0EA1E6">
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="icon" href="./favicon.ico" sizes="16x16 32x32 48x48">
+  <link rel="apple-touch-icon" href="./icon-192.png">
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <header class="app-bar">
+    <img class="logo" src="./icon-64.png" alt="" width="28" height="28">
+    <span class="title">birdwatch</span>
+  </header>
+
+  <nav class="tabs">
+    <button id="tab-home" class="tab active">ホーム</button>
+    <button id="tab-settings" class="tab">設定</button>
+  </nav>
+
+  <main>
+    <section id="view-home">
+      <div class="composer">
+        <textarea id="compose" rows="3" maxlength="2000"
+                  placeholder="いまどうしてる?(bunker経由で署名)"></textarea>
+        <div class="composer-bar">
+          <span id="conn-status" class="status" data-state="busy"></span>
+          <button id="btn-post" class="primary">投稿</button>
+        </div>
+      </div>
+      <div class="feed-bar">
+        <span class="muted" id="feed-hint"></span>
+        <button id="btn-reload" class="ghost">更新</button>
+      </div>
+      <div id="feed" class="feed"></div>
+    </section>
+
+    <section id="view-settings" hidden>
+      <h2>リモート署名 (NIP-46 bunker)</h2>
+      <p class="muted">家のデーモンが鍵を持ち、この画面はリモート署名で投稿します。
+        TUIの設定「nostr connect」のQR、または <code>bin/nostr --bunker-secret</code>
+        のURIを貼り付けてください。</p>
+      <textarea id="bunker-uri" rows="4" placeholder="bunker://…?relay=…&secret=…"></textarea>
+      <div class="row">
+        <button id="btn-connect" class="primary">接続</button>
+        <button id="btn-disconnect" class="ghost" hidden>切断</button>
+      </div>
+      <h2>この端末について</h2>
+      <p class="muted">ブラウザは署名用の鍵を持ちません。端末内にはNIP-46
+        クライアント用の使い捨て鍵(localStorage)だけが保存され、
+        鍵本体はデーモンのvaultから出ません。</p>
+    </section>
+  </main>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
