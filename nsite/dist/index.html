@@ -3,58 +3,130 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" media="(prefers-color-scheme: light)" content="#FAF8FE">
+  <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#141317">
   <title>birdwatch</title>
-  <meta name="theme-color" content="#0EA1E6">
   <link rel="manifest" href="./manifest.webmanifest">
   <link rel="icon" href="./favicon.ico" sizes="16x16 32x32 48x48">
   <link rel="apple-touch-icon" href="./icon-192.png">
   <link rel="stylesheet" href="./style.css">
+  <style>
+    /* nsite-only additions (style.css is kept byte-identical to the Rails app) */
+    .qr-video { width: 100%; max-height: 60vh; border-radius: var(--radius-md); background: #000; }
+    .settings-form__buttons { display: flex; gap: 8px; flex-wrap: wrap; }
+  </style>
+  <script type="module" src="./app.js"></script>
 </head>
-<body>
+<body class="page-home">
   <header class="app-bar">
-    <img class="logo" src="./icon-64.png" alt="" width="28" height="28">
-    <span class="title">birdwatch</span>
+    <a class="app-bar__brand" href="./" aria-label="birdwatch ホーム">
+      <img class="app-bar__logo" src="./icon-64.png" alt="birdwatch" width="28" height="28">
+    </a>
+    <div class="app-bar__title" id="appbar-title">birdwatch</div>
   </header>
 
-  <nav class="tabs">
-    <button id="tab-home" class="tab active">ホーム</button>
-    <button id="tab-settings" class="tab">設定</button>
-  </nav>
-
-  <main>
-    <section id="view-home">
-      <div class="composer">
-        <textarea id="compose" rows="3" maxlength="2000"
-                  placeholder="いまどうしてる?(bunker経由で署名)"></textarea>
-        <div class="composer-bar">
-          <span id="conn-status" class="status" data-state="busy"></span>
-          <button id="btn-post" class="primary">投稿</button>
-        </div>
-      </div>
-      <div class="feed-bar">
-        <span class="muted" id="feed-hint"></span>
-        <button id="btn-reload" class="ghost">更新</button>
-      </div>
-      <div id="feed" class="feed"></div>
+  <main class="content">
+    <section id="view-home" hidden>
+      <div class="feed" id="feed"></div>
     </section>
 
     <section id="view-settings" hidden>
-      <h2>リモート署名 (NIP-46 bunker)</h2>
-      <p class="muted">家のデーモンが鍵を持ち、この画面はリモート署名で投稿します。
-        TUIの設定「nostr connect」のQR、または <code>bin/nostr --bunker-secret</code>
-        のURIを貼り付けてください。</p>
-      <textarea id="bunker-uri" rows="4" placeholder="bunker://…?relay=…&secret=…"></textarea>
-      <div class="row">
-        <button id="btn-connect" class="primary">接続</button>
-        <button id="btn-disconnect" class="ghost" hidden>切断</button>
+      <div class="page">
+        <h1 class="page-title">設定</h1>
+
+        <section class="settings-card">
+          <h2 class="settings-card__title">アカウント</h2>
+          <div class="settings-row">
+            <span class="settings-row__label">公開鍵</span>
+            <code class="settings-row__value settings-row__value--mono" id="acct-pk">—</code>
+          </div>
+          <p class="settings-card__body settings-card__body--muted">
+            鍵は家のデーモン(vault)にだけあり、この端末は使い捨ての接続用鍵を持つだけです。
+          </p>
+        </section>
+
+        <section class="settings-card">
+          <h2 class="settings-card__title">リモート署名 (NIP-46 bunker)</h2>
+          <div id="bunker-rows">
+            <div class="settings-row">
+              <span class="settings-row__label">状態</span>
+              <span class="settings-row__value" id="bunker-state">確認中…</span>
+            </div>
+          </div>
+          <p class="settings-card__body settings-card__body--muted" id="bunker-hint">
+            投稿は家のPCのデーモンがbunker経由で署名します。
+          </p>
+          <form id="bunker-form" class="settings-form">
+            <label class="field">
+              <span class="field__label">bunker URI</span>
+              <input id="bunker-uri" class="field__input" placeholder="bunker://…"
+                     autocomplete="off" spellcheck="false" autocapitalize="off">
+            </label>
+            <div class="settings-form__buttons">
+              <md-filled-button type="submit" id="btn-connect">
+                <span class="msr" slot="icon">key</span>
+                接続
+              </md-filled-button>
+              <md-outlined-button type="button" id="btn-qr">
+                <span class="msr" slot="icon">photo_camera</span>
+                QRをスキャン
+              </md-outlined-button>
+            </div>
+          </form>
+          <p class="settings-card__body settings-card__body--muted">
+            URIは家のPCで TUI設定 → nostr connect（QRページの下にURI表示）か
+            <code>bin/nostr --bunker-secret</code> で発行されます。PCのQRを「QRをスキャン」で読み取れば入力は不要です。
+          </p>
+          <md-filled-button id="btn-disconnect" class="danger-button" hidden>
+            <span class="msr" slot="icon">link_off</span>
+            切断
+          </md-filled-button>
+        </section>
       </div>
-      <h2>この端末について</h2>
-      <p class="muted">ブラウザは署名用の鍵を持ちません。端末内にはNIP-46
-        クライアント用の使い捨て鍵(localStorage)だけが保存され、
-        鍵本体はデーモンのvaultから出ません。</p>
     </section>
   </main>
 
-  <script type="module" src="./app.js"></script>
+  <nav class="nav-bar">
+    <md-navigation-bar id="navbar">
+      <md-navigation-tab label="ホーム">
+        <span class="msr" slot="active-icon">home</span>
+        <span class="msr" slot="inactive-icon">home</span>
+      </md-navigation-tab>
+      <md-navigation-tab label="設定">
+        <span class="msr" slot="active-icon">settings</span>
+        <span class="msr" slot="inactive-icon">settings</span>
+      </md-navigation-tab>
+    </md-navigation-bar>
+  </nav>
+
+  <md-fab class="compose-fab" variant="primary" size="medium" id="compose-fab" aria-label="新規投稿">
+    <span class="msr" slot="icon">add</span>
+  </md-fab>
+
+  <md-dialog id="compose-dialog" class="compose-dialog">
+    <div slot="headline">新規投稿</div>
+    <div slot="content">
+      <textarea id="compose-text" class="compose-textarea" rows="4" maxlength="280"
+                required placeholder="いま何をしている？"></textarea>
+    </div>
+    <div slot="actions">
+      <md-text-button id="compose-cancel">キャンセル</md-text-button>
+      <md-filled-button id="compose-submit">投稿</md-filled-button>
+    </div>
+  </md-dialog>
+
+  <md-dialog id="qr-dialog">
+    <div slot="headline">QRをスキャン</div>
+    <div slot="content">
+      <video id="qr-video" class="qr-video" playsinline muted></video>
+      <p class="settings-card__body settings-card__body--muted" id="qr-status">カメラを起動しています…</p>
+    </div>
+    <div slot="actions">
+      <md-text-button id="qr-cancel">キャンセル</md-text-button>
+    </div>
+  </md-dialog>
+
+  <div id="app-toast" class="toast" role="status" aria-live="polite"></div>
 </body>
 </html>
