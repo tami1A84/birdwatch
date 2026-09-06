@@ -47,6 +47,35 @@ ruby ../nostrd/bin/nostrd --mock     # in-memory store on /tmp/nostrd-dev.sock
 NOSTRD_SOCKET=/tmp/nostrd-dev.sock bin/rails server -p 3000
 ```
 
+## Remote use: NIP-46 bunker (outside access with per-client auth)
+
+The web app itself holds no keys. Reads are served from the local daemon;
+every write requires an **active NIP-46 session**: the browser's ephemeral
+client key must have completed a real kind-24133 relay handshake with the
+daemon's bunker. Anyone who reaches the web UI without that handshake stays
+read-only.
+
+One-time setup (on the machine running nostrd):
+
+```sh
+bin/nostr --bunker-secret    # prints a bunker:// URI (secret + relays)
+bin/nostr --bunker-list      # allowlisted clients + active sessions
+bin/nostr --bunker-forget <client-pubkey-hex>
+```
+
+The bunker is enabled when `~/.config/nostrd/bunker.json` exists (mode 0600).
+To use birdwatch from outside:
+
+1. Reach the web app over a secure channel (Tailscale/VPN or a TLS reverse
+   proxy) — it still binds to 127.0.0.1 by default.
+2. Open 設定 → リモート署名 (NIP-46 bunker), paste the `bunker://` URI, 接続.
+3. Writes now trigger NIP-46 sign requests from that browser session; the
+   daemon signs only for allowlisted client keys. Disconnect from the same
+   screen (or `--bunker-forget` to revoke the client entirely).
+
+Daemon restarts clear active sessions; the web silently re-connects using the
+persisted allowlist (no secret re-entry).
+
 ## Layout
 
 - `lib/nostrd_client.rb` — socket client: request/response with id matching,

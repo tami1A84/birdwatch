@@ -10,7 +10,7 @@ module Nostrd
   class Server
     def initialize(store:, socket_path:, signer: ->(_name, _params) { true }, publisher: nil,
                    info: nil, relay_flags: nil, advertise_relays: nil, relay_remove: nil, lock: nil, unlock: nil, import_key: nil,
-                   one_shot: nil, history: 100,
+                   one_shot: nil, history: 100, bunker: nil,
                    follow: nil, unfollow: nil)
       @store = store
       @path = socket_path
@@ -28,6 +28,7 @@ module Nostrd
       # may still pass params.limit to override per subscription
       @follow = follow # pubkey -> orchestrator.follow (state + dial)
       @unfollow = unfollow # pubkey -> orchestrator.unfollow
+      @bunker = bunker # Nostrd::Bunker (nil = NIP-46 transport disabled)
       @listeners = [] # timeline subscriber conns for live broadcast
       @mos = Mutex.new
     end
@@ -135,6 +136,9 @@ module Nostrd
       when "unfollow" then unfollow_op(conn, msg)
       when "delete_note" then delete_note_op(conn, msg)
       when "search" then search_op(conn, msg)
+      when "bunker_secret" then bunker_secret_op(conn, msg)
+      when "bunker_list" then bunker_list_op(conn, msg)
+      when "bunker_forget" then bunker_forget_op(conn, msg)
       else reply(conn, ev: "error", code: "unknown_op", message: msg["op"].to_s)
       end
     end
@@ -178,7 +182,9 @@ module Nostrd
             my_profile: data["my_profile"] || data[:my_profile],
             locked: data["locked"] || data[:locked] || false,
             relays: data["relays"] || data[:relays] || [],
-            profiles: data["profiles"] || data[:profiles] || [])
+            profiles: data["profiles"] || data[:profiles] || [],
+            bunker: { "enabled" => @bunker&.enabled? || false,
+                      "sessions" => @bunker ? @bunker.session_pubkeys : [] })
     rescue StandardError => e
       reply(conn, ev: "error", id: id, code: "info_failed", message: e.message)
     end
@@ -244,6 +250,17 @@ module Nostrd
 
     def act(conn, msg)
       # Signing oracle boundary: clients send actions, never raw events.
+      # NIP-46 bunker gate: when the bunker is enabled, an action MAY carry
+      # "client" (the NIP-46 client pubkey); if present it must name an
+      # active bunker session. Clients that pass no client field (the TUI)
+      # keep their trusted-local behavior — the gate exists so the web can
+      # make every write attributable to an authenticated bunker session.
+      if @bunker&.enabled? && msg["client"]
+        client = msg["client"].to_s
+        raise ArgumentError, "no_session" unless
+          client.match?(/\A[0-9a-f]{64}\z/) && @bunker.active?(client)
+      end
+
       event = @signer.call(msg["name"], msg["params"] || {})
       published = @publisher && event.is_a?(Hash) ? @publisher.call(event) : nil
       reply(conn, ev: "ack", id: msg["id"], ok: true,
@@ -411,6 +428,43 @@ module Nostrd
                  data: { "notes" => notes.map(&:to_h), "profiles" => profiles })
     rescue StandardError => e
       reply(conn, ev: "error", id: msg["id"], code: "search_failed", message: e.message)
+    end
+
+    # --- NIP-46 bunker ops ----------------------------------------------
+
+    # Mint/return the bunker connection material: creates bunker.json with a
+    # fresh secret on first use, never rotates an existing one.
+    def bunker_secret_op(conn, msg)
+      raise ArgumentError, "bunker unavailable" unless @bunker
+
+      info = @bunker.enable
+      reply(conn, ev: "result", id: msg["id"], data: info)
+    rescue StandardError => e
+      reply(conn, ev: "ack", id: msg["id"], ok: false, error: e.message)
+    end
+
+    def bunker_list_op(conn, msg)
+      raise ArgumentError, "bunker unavailable" unless @bunker
+
+      reply(conn, ev: "result", id: msg["id"],
+                 data: { "clients" => @bunker.clients,
+                         "sessions" => @bunker.session_pubkeys,
+                         "enabled" => @bunker.enabled? })
+    rescue StandardError => e
+      reply(conn, ev: "ack", id: msg["id"], ok: false, error: e.message)
+    end
+
+    # Drop a client from the allowlist and kill its live session.
+    def bunker_forget_op(conn, msg)
+      raise ArgumentError, "bunker unavailable" unless @bunker
+
+      client = msg.dig("params", "client").to_s
+      raise ArgumentError, "client must be 64 hex chars" unless client.match?(/\A[0-9a-f]{64}\z/)
+
+      removed = @bunker.forget!(client)
+      reply(conn, ev: "ack", id: msg["id"], ok: true, forgotten: removed == client)
+    rescue StandardError => e
+      reply(conn, ev: "ack", id: msg["id"], ok: false, error: e.message)
     end
 
     # Kind 3 contact list reflecting the CURRENT follow set (info callable

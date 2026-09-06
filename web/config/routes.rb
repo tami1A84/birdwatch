@@ -36,4 +36,6 @@ Rails.application.routes.draw do
   post "settings/profile", to: "settings#update_profile", as: :settings_profile
   post "settings/lock", to: "settings#lock", as: :settings_lock
   post "settings/unlock", to: "settings#unlock", as: :settings_unlock
+  post "settings/bunker/connect", to: "settings#bunker_connect", as: :settings_bunker_connect
+  post "settings/bunker/disconnect", to: "settings#bunker_disconnect", as: :settings_bunker_disconnect
 end

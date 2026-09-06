@@ -112,37 +112,39 @@ class NostrdClient
     request(op: "search", params: { query: query, limit: limit })["data"]
   end
 
-  def follow(pubkey)     = op_request(op: "follow",   params: { pubkey: pubkey })
-  def unfollow(pubkey)   = op_request(op: "unfollow", params: { pubkey: pubkey })
-  def delete_note(ids)   = op_request(op: "delete_note", params: { ids: Array(ids) })
-  def relay_add(url)     = op_request(op: "relay_add", params: { url: url })
+  def follow(pubkey, client: nil)     = op_request(op: "follow",   params: { pubkey: pubkey }, client: client)
+  def unfollow(pubkey, client: nil)   = op_request(op: "unfollow", params: { pubkey: pubkey }, client: client)
+  def delete_note(ids, client: nil)   = op_request(op: "delete_note", params: { ids: Array(ids) }, client: client)
+  def relay_add(url, client: nil)     = op_request(op: "relay_add", params: { url: url }, client: client)
 
   # relay_flags upserts: unknown url is added with these flags (daemon-side
   # set_relay_flags), so add + toggle share one op.
-  def relay_flags(url, flags)
+  def relay_flags(url, flags, client: nil)
     p = { url: url }.merge(flags.slice(:read, :inbox, :write, :outbox, :discover, :search))
-    op_request(op: "relay_flags", params: p)
+    op_request(op: "relay_flags", params: p, client: client)
   end
 
-  def relay_remove(url) = op_request(op: "relay_remove", params: { url: url })
-  def advertise_relays  = op_request(op: "advertise_relays")
+  def relay_remove(url, client: nil) = op_request(op: "relay_remove", params: { url: url }, client: client)
+  def advertise_relays(client: nil)  = op_request(op: "advertise_relays", client: client)
 
   def lock               = op_request(op: "lock")
-  def unlock(passphrase) = op_request(op: "unlock", params: { passphrase: passphrase })
+  def unlock(passphrase, client: nil) = op_request(op: "unlock", params: { passphrase: passphrase }, client: client)
 
   # -- signing-oracle actions (web never sees keys) --------------------------
+  # client: NIP-46 bunker client pubkey — the daemon gates write ops on an
+  # active bunker session for it when bunker mode is enabled.
 
-  def post_note(text) = action("post_note", { text: text })
+  def post_note(text, client: nil) = action("post_note", { text: text }, client: client)
 
   # NIP-22: parent is the event being replied to (id/pubkey/kind/tags).
-  def post_comment(parent, text)
-    action("post_comment", { text: text, parent: parent })
+  def post_comment(parent, text, client: nil)
+    action("post_comment", { text: text, parent: parent }, client: client)
   end
 
-  def like(note_id, author_pubkey) = action("like", { id: note_id, pubkey: author_pubkey })
+  def like(note_id, author_pubkey, client: nil) = action("like", { id: note_id, pubkey: author_pubkey }, client: client)
 
-  def update_profile(fields)
-    action("update_profile", { profile: fields })
+  def update_profile(fields, client: nil)
+    action("update_profile", { profile: fields }, client: client)
   end
 
   # -- SSE fan-out ------------------------------------------------------------
@@ -160,16 +162,19 @@ class NostrdClient
 
   private
 
-  def op_request(frame)
+  def op_request(**frame)
+    # client: NIP-46 bunker session pubkey — merged into the wire frame for
+    # the daemon's action gate. Stays out of the frame when nil (TUI-compat).
+    client = frame.delete(:client) || frame.delete("client")
+    frame = frame.merge("client" => client) if client
     resp = request(**frame)
     raise Rejected, resp["error"].presence || "拒否されました" if resp["ok"] == false
 
     resp
   end
 
-  def action(name, params)
-    resp = op_request(op: "action", name: name, params: params)
-    resp
+  def action(name, params, client: nil)
+    op_request(op: "action", name: name, params: params, client: client)
   end
 
   def request(**frame)

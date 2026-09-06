@@ -17,12 +17,13 @@ module Nostrd
     # Profile sync is one batched authors-REQ per try (rotating relays).
     PROFILE_BATCH = 100
 
-    def initialize(store:, picker:, pool:, my_pubkey: nil,
+    def initialize(store:, picker:, pool:, my_pubkey: nil, bunker: nil,
                    now: -> { Time.now.to_i }, logger: $stderr)
       @store = store
       @picker = picker
       @pool = pool
       @my_pubkey = my_pubkey
+      @bunker = bunker # Nostrd::Bunker, optional (nil = transport disabled)
       @now = now
       @logger = logger
       @followed = []
@@ -272,6 +273,17 @@ module Nostrd
       # Still dial relays the picker picked for seek affinity.
       @picker.assignments.each_key do |url|
         @pending_dials << url unless @pool.connections.key?(url)
+      end
+      # NIP-46 bunker: re-check each tick so the persistent kind-24133 sub
+      # survives relay reconnects, and dial the relays advertised in the
+      # bunker:// URI even when gossip never picks them. Subscribing an
+      # unconnected target is fine — queue_req holds the frame until the
+      # dial completes.
+      if @bunker
+        @bunker.ensure_subscribed((@pool.connections.keys + @bunker.relay_targets).uniq)
+        @bunker.relay_targets.each do |url|
+          @pending_dials << url unless @pool.connections.key?(url)
+        end
       end
       # Gossip switch wiring: an advertised inbox (or discover) relay is a
       # dial target of its own — evidence-based picking alone never reaches

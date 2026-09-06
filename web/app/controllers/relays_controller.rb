@@ -1,6 +1,8 @@
 class RelaysController < ApplicationController
   FLAGS = %i[read inbox write outbox discover search].freeze
 
+  before_action :require_bunker_session!, only: %i[create flags destroy advertise]
+
   def index
     info = me_info
     @relays = Array(info["relays"])
@@ -13,7 +15,7 @@ class RelaysController < ApplicationController
       return redirect_to relays_path, alert: "リレーURLは wss:// または ws:// で始まる必要があります"
     end
 
-    nostrd.relay_flags(url, default_flags)
+    nostrd.relay_flags(url, default_flags, client: write_client)
     redirect_to relays_path, notice: "リレーを追加しました"
   rescue NostrdClient::Rejected, NostrdClient::Error => e
     redirect_to relays_path, alert: "追加できませんでした: #{e.message}"
@@ -21,7 +23,7 @@ class RelaysController < ApplicationController
 
   def flags
     url = params.require(:url).to_s.strip
-    nostrd.relay_flags(url, FLAGS.index_with { |f| params[f].present? })
+    nostrd.relay_flags(url, FLAGS.index_with { |f| params[f].present? }, client: write_client)
     redirect_to relays_path, notice: "リレーの設定を保存しました"
   rescue NostrdClient::Rejected, NostrdClient::Error => e
     redirect_to relays_path, alert: "保存できませんでした: #{e.message}"
@@ -29,14 +31,14 @@ class RelaysController < ApplicationController
 
   def destroy
     url = params.require(:url).to_s.strip
-    nostrd.relay_remove(url)
+    nostrd.relay_remove(url, client: write_client)
     redirect_to relays_path, notice: "リレーを削除しました"
   rescue NostrdClient::Rejected, NostrdClient::Error => e
     redirect_to relays_path, alert: "削除できませんでした: #{e.message}"
   end
 
   def advertise
-    nostrd.advertise_relays
+    nostrd.advertise_relays(client: write_client)
     redirect_to relays_path, notice: "リレーリスト（NIP-65）を公開しました"
   rescue NostrdClient::Rejected, NostrdClient::Error => e
     redirect_to relays_path, alert: "公開できませんでした: #{e.message}"

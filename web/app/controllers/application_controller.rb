@@ -36,6 +36,66 @@ class ApplicationController < ActionController::Base
     "#{pk[0, 8]}…"
   end
 
+  # -- NIP-46 bunker session (write-path authorization) ----------------------
+  #
+  # The browser holds an encrypted cookie with an ephemeral NIP-46 client
+  # keypair. A write is allowed only while that client pubkey has an ACTIVE
+  # session on the daemon's bunker — which exists only after a real kind-24133
+  # relay handshake the daemon authorized (secret first time, allowlist after).
+  # Anyone who can reach the web UI without that handshake stays read-only.
+
+  def bunker_cookie
+    c = cookies.encrypted[:bunker_client]
+    c.is_a?(Hash) ? c.symbolize_keys : nil
+  end
+
+  def bunker_client_pubkey
+    bunker_cookie&.dig(:client)
+  end
+
+  def bunker_enabled?
+    me_info.dig("bunker", "enabled") == true
+  end
+
+  def bunker_session_active?(client = bunker_client_pubkey)
+    client.present? && Array(me_info.dig("bunker", "sessions")).include?(client)
+  end
+
+  # Write-op gate. Bunker disabled → legacy trusted-local mode (no gate).
+  # Cookie present but session stale (e.g. daemon restart cleared sessions) →
+  # silent re-auth over the relay transport, then retry the check once.
+  def require_bunker_session!
+    return unless bunker_enabled?
+    return if bunker_session_active?
+    return if bunker_client_pubkey && reconnect_bunker!
+
+    redirect_to settings_path,
+                alert: "リモート署名セッションがありません。設定画面で bunker に接続してください。"
+  end
+
+  # The pubkey passed down to nostrd write ops (daemon validates the session
+  # server-side too — this is belt and braces, not the real gate).
+  def write_client
+    bunker_enabled? ? bunker_client_pubkey : nil
+  end
+
+  # Re-run the NIP-46 connect handshake with the cookie-held key. Works
+  # without the secret because the daemon's allowlist persists across its
+  # restarts. Returns true when the daemon now has an active session.
+  def reconnect_bunker!
+    c = bunker_cookie
+    return false unless c&.dig(:sk).present? && c&.dig(:signer).present? && Array(c[:relays]).present?
+
+    client = Nip46Client.new(signer_pubkey: c[:signer], relays: Array(c[:relays]),
+                             secret: "", seckey_hex: c[:sk], timeout: 10)
+    client.connect!
+    @me_info = nil # info frame was cached before the session landed
+    true
+  rescue StandardError => e
+    Rails.logger&.warn("bunker reconnect failed: #{e.class}: #{e.message}")
+    false
+  end
+
   def valid_pubkey?(pk)
     pk.to_s.match?(/\A[0-9a-f]{64}\z/)
   end

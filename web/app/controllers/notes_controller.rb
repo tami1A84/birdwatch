@@ -1,6 +1,10 @@
 class NotesController < ApplicationController
   MAX_TEXT = 280
 
+  # Writes ride an active NIP-46 bunker session when bunker mode is on.
+  before_action :require_bunker_session!,
+                only: %i[create comment like destroy]
+
   def show
     load_thread
     not_found! unless @note
@@ -11,7 +15,7 @@ class NotesController < ApplicationController
     return redirect_to root_path, alert: "本文を入力してください" if text.empty?
     return redirect_to root_path, alert: "本文は#{MAX_TEXT}文字以内にしてください" if text.length > MAX_TEXT
 
-    nostrd.post_note(text)
+    nostrd.post_note(text, client: write_client)
     redirect_to root_path, notice: "投稿しました"
   rescue NostrdClient::Rejected, NostrdClient::Error => e
     redirect_to root_path, alert: "投稿できませんでした: #{e.message}"
@@ -25,7 +29,7 @@ class NotesController < ApplicationController
     return redirect_to note_path(parent["id"]), alert: "本文を入力してください" if text.empty?
     return redirect_to note_path(parent["id"]), alert: "本文は#{MAX_TEXT}文字以内にしてください" if text.length > MAX_TEXT
 
-    nostrd.post_comment(parent, text)
+    nostrd.post_comment(parent, text, client: write_client)
     redirect_to note_path(parent["id"]), notice: "返信しました"
   rescue NostrdClient::Rejected, NostrdClient::Error => e
     redirect_to note_path(params[:id]), alert: "返信できませんでした: #{e.message}"
@@ -35,7 +39,7 @@ class NotesController < ApplicationController
     note = find_note(params[:id])
     return not_found! unless note
 
-    nostrd.like(note["id"], note["pubkey"])
+    nostrd.like(note["id"], note["pubkey"], client: write_client)
     redirect_to note_path(note["id"]), notice: "いいねしました"
   rescue NostrdClient::Rejected, NostrdClient::Error => e
     redirect_to note_path(params[:id]), alert: "いいねできませんでした: #{e.message}"
@@ -46,7 +50,7 @@ class NotesController < ApplicationController
     note = find_note(params[:id])
     return not_found! unless note
 
-    nostrd.delete_note(note["id"])
+    nostrd.delete_note(note["id"], client: write_client)
     redirect_to root_path, notice: "削除しました"
   rescue NostrdClient::Rejected, NostrdClient::Error => e
     redirect_to note_path(params[:id]), alert: "削除できませんでした: #{e.message}"

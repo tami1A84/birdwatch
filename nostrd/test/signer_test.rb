@@ -4,6 +4,8 @@ require "minitest/autorun"
 require "tmpdir"
 require_relative "../lib/nostrd/signer"
 require_relative "../lib/nostrd/nip46"
+require_relative "../lib/nostrd/bunker"
+require "json"
 
 class SignerTest < Minitest::Test
   def setup
@@ -97,26 +99,33 @@ class SignerTest < Minitest::Test
 
   def test_nip46_handler_signs_via_vault
     @signer.create_key(passphrase: "pw")
-    handler = Nostrd::Nip46Handler.new(@signer)
+    cfg = Nostrd::Bunker::Config.new(path: File.join(@dir, "bunker.json"))
+    cfg.instance_variable_get(:@data)["secret"] = "ab" * 16
+    handler = Nostrd::Nip46Handler.new(signer: @signer, config: cfg)
+    me = @signer.pubkey
 
-    pong = handler.handle({ "id" => "1", "method" => "ping" })
-    assert_equal "pong", pong[:result]
+    connect = handler.handle({ "id" => "1b", "method" => "connect",
+                               "params" => [me, "ab" * 16] }, client_pubkey: "c" * 64)
+    assert_equal "ack", connect["result"]
 
-    # signing requires a (v0: trivial) connect handshake first
-    connect = handler.handle({ "id" => "1b", "method": "connect" }.transform_keys(&:to_s))
-    assert_equal "connect confirmed", connect[:result]
+    pong = handler.handle({ "id" => "1", "method" => "ping", "params" => [] },
+                          client_pubkey: "c" * 64)
+    assert_equal "pong", pong["result"]
 
-    pk = handler.handle({ "id" => "2", "method" => "get_public_key" })
-    assert_equal @signer.pubkey, pk[:result]
+    pk = handler.handle({ "id" => "2", "method" => "get_public_key", "params" => [] },
+                        client_pubkey: "c" * 64)
+    assert_equal @signer.pubkey, pk["result"]
 
     req = { "id" => "3", "method" => "sign_event",
-            "params" => { "kind" => 1, "content" => "via nip46", "tags" => [] } }
-    signed = handler.handle(req)
-    assert_equal @signer.pubkey, signed[:result]["pubkey"]
-    assert signed[:result]["sig"]
+            "params" => [{ "kind" => 1, "content" => "via nip46", "tags" => [] }] }
+    signed = handler.handle(req, client_pubkey: "c" * 64)
+    ev = JSON.parse(signed["result"])
+    assert_equal @signer.pubkey, ev["pubkey"]
+    assert ev["sig"]
 
-    unknown = handler.handle({ "id" => "4", "method" => "nope" })
-    assert_equal -32601, unknown[:error][:code]
+    unknown = handler.handle({ "id" => "4", "method" => "nope", "params" => [] },
+                             client_pubkey: "c" * 64)
+    assert_equal -32601, unknown.dig("error", "code")
   end
 
   def test_update_relay_list_builds_kind_10002

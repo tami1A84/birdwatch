@@ -84,6 +84,12 @@ module Nostrd
       queue_req(url, sub_id, NostrCore::Subscription.req(sub_id, { "#p": [my_pubkey], kinds: [1, 7, 1111] }), false)
     end
 
+    # NIP-46 bunker transport: requests arrive encrypted to us (kind 24133,
+    # p-tagged to our pubkey). Persistent stream sub, like the inbox.
+    def subscribe_bunker(url, sub_id, my_pubkey)
+      queue_req(url, sub_id, NostrCore::Subscription.req(sub_id, { "#p": [my_pubkey], kinds: [24133] }), false)
+    end
+
     def seek_relay_list(url, sub_id, pubkey)
       queue_req(url, sub_id, NostrCore::Subscription.seek_relay_list(sub_id, pubkey), true)
     end

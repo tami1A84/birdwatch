@@ -18,6 +18,10 @@ module Nostrd
     end
 
     attr_reader :pubkey
+    # Raw 32-byte seckey for IN-PROCESS crypto only: the bunker transport
+    # derives NIP-44 conversation keys to encrypt/decrypt kind-24133 traffic.
+    # Never sent over the socket protocol, never logged.
+    attr_reader :seckey
 
     def locked? = @seckey.nil?
 

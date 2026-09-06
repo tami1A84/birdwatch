@@ -111,3 +111,46 @@ nip05 / pubkey 前方一致(ASCII は大小非区別)。空クエリは
 kind 1 + 7(NIP-25 リアクション) + 1111(NIP-22 コメント) を運ぶ。
 クライアントは kind を見て分岐すること(TUI は 7 を 👍 集計に、Web は
 スレッドのリアクション集計に使う)。
+
+## NIP-46 bunker (リモート署名)
+
+nostrd は NIP-46 のリモート署名機(bunker)として動作できる。鍵は vault の
+まま外に出ず、外部クライアント(外出先の web セッション、NIP-46 対応
+アプリ)がリレー越しから署名を依頼する。
+
+- トランスポート: kind 24133(NIP-44 v2 暗号化 JSON-RPC)。デーモンは自分の
+  p タグ宛の 24133 を恒久購読し、リクエスト著者(クライアント鍵)へ暗号化
+  レスポンスを返す(受信リレーを最優先にパブリッシュ)。
+- 有効条件: `~/.config/nostrd/bunker.json`(0600) が存在し secret を持つ
+  こと。`XDG_CONFIG_HOME` を尊重。
+- 承認モデル: `connect` は (a) 許可リスト済みクライアント鍵、または
+  (b) secret 一致の初回接続(以後その鍵を永続許可リストへ追加)のみ受理。
+  他メソッドは全てライブセッション必須。`disconnect` でセッション破棄
+  (許可リストは残る。完全失効は `--bunker-forget`)。
+- サポートメソッド: `connect` / `get_public_key` / `sign_event`(署名済み
+  イベントの JSON 文字列を返す) / `ping` / `disconnect`。
+
+### 関連 op
+
+- `info` の応答に `"bunker": {enabled: bool, sessions: [client 64hex]}`
+  を追加。web は自セッションの生存確認に使う。
+- `action` は `"client": <64hex>` を受け付ける。bunker 有効時、client
+  が指定されたらアクティブセッションであることを検証し、失敗は
+  `ack ok:false error:"no_session"`。client 未指定のローカルクライアント
+  (TUI)は従来どおり信頼済み。
+- `bunker_secret`: bunker.json を作成/読み込み、
+  `{uri, relays, secret}` を返す(`bunker://<hex>?relay=…&secret=…`)。
+  secret は初回のみ生成し回転しない。
+- `bunker_list`: `{clients, sessions, enabled}` を返す。
+- `bunker_forget` (params `{client}`): 許可リストから削除+セッション破棄。
+
+### CLI (bin/nostr)
+
+```sh
+bin/nostr --bunker-secret            # URI を発行(web の設定画面へ貼る)
+bin/nostr --bunker-list              # 許可リスト+セッション一覧
+bin/nostr --bunker-forget <64hex>    # クライアントを失効
+```
+
+- `nostr_core/nip44.rb`: NIP-44 v2 実装(公式ベクトル全件通過)。
+  `encrypt/decrypt(sk32, pk32, …)`、テスト用に `nonce:` 指定可。

@@ -7,6 +7,9 @@
 #   nostr --logs     tail the daemon log
 #   nostr --setup    log in with your existing key (imports nsec, then exits)
 #   nostr --newkey   create a fresh key (writes the vault, then exits)
+#   nostr --bunker-secret   enable NIP-46 bunker / print the connection URI
+#   nostr --bunker-list     allowlisted NIP-46 clients + live sessions
+#   nostr --bunker-forget <hex>   revoke a NIP-46 client
 #
 # The daemon keeps running after the TUI exits, so the next `nostr` is
 # instant and there is only ever one daemon for the whole desktop.
@@ -116,6 +119,32 @@ case "${1:-}" in
   mkdir -p "$CACHE"; touch "$LOG"
   exec tail -n 80 -f "$LOG"
   ;;
+--bunker-secret|--bunker-list|--bunker-forget)
+  # NIP-46 bunker management. The daemon (unlocked, holding the key) owns
+  # bunker.json; these ops go over the socket like everything else.
+  alive || { echo "nostrd not reachable (socket $SOCKET) — start it first: nostr" >&2; exit 1; }
+  op_id="b1"
+  op_json='{"op":"'"${1#--}"'","id":"'"$op_id"'"}'
+  if [[ "$1" == "--bunker-forget" ]]; then
+    [[ -n "${2:-}" ]] || { echo "usage: nostr --bunker-forget <client-pubkey-hex>" >&2; exit 1; }
+    op_json=$(ruby -rjson -e 'print JSON.generate(op: "bunker_forget", id: "b9", params: { client: ARGV[0] })' "$2")
+  fi
+  ruby -rsocket -rjson -e '
+    s = UNIXSocket.new(ARGV[0])
+    s.write(JSON.parse(ARGV[1]).to_json + "\n")
+    resp = JSON.parse(s.gets.to_s)
+    abort "failed: #{(resp.dig("error") || resp["message"]).inspect}" unless
+      %w[result ack].include?(resp["ev"]) && resp.fetch("ok", true)
+    if ARGV[2] == "--bunker-secret"
+      puts resp.dig("data", "uri").to_s
+      puts
+      puts "bunker有効。上のURIをbirdwatch webの「設定 → リモート署名」に貼ってください。"
+      puts "secretはbunker.json(0600)に保存済み。再発行はされません。"
+    else
+      puts JSON.pretty_generate(resp["data"] || resp)
+    end
+  ' "$SOCKET" "$op_json" "$1"
+  ;;
 --setup)
   exec "$DAEMON" --socket "$SOCKET" --vault "$VAULT" --db "$DB" --import-nsec --setup-only
   ;;
@@ -123,7 +152,7 @@ case "${1:-}" in
   exec "$DAEMON" --socket "$SOCKET" --vault "$VAULT" --db "$DB" --new-key --setup-only
   ;;
 --help|-h)
-  sed -n '2,13p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '2,16p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
   ;;
 "")
   if ! alive; then

@@ -25,6 +25,45 @@
   </section>
 
   <section class="settings-card">
+    <h2 class="settings-card__title">リモート署名 (NIP-46 bunker)</h2>
+    <% if @bunker_enabled %>
+      <% if @bunker_connected %>
+        <div class="settings-row">
+          <span class="settings-row__label">状態</span>
+          <span class="settings-row__value">接続中 (<code class="settings-row__value--mono"><%= short_pubkey(@bunker_client) %></code>)</span>
+        </div>
+        <p class="settings-card__body settings-card__body--muted">
+          投稿・いいね・削除などの書き込みは、家のデーモンがbunker経由で署名します。鍵はブラウザにもサーバーにも保存されません。
+        </p>
+        <%= button_to settings_bunker_disconnect_path, method: :post, class: "danger-button",
+              form: { data: { confirm: "bunkerから切断しますか？接続するまで書き込みができなくなります。", confirm_title: "切断" } } do %>
+          <span class="msr" slot="icon">link_off</span>
+          切断
+        <% end %>
+      <% else %>
+        <p class="settings-card__body">未接続です。このままでは閲覧のみ可能で、書き込み操作はできません。</p>
+        <%= form_with url: settings_bunker_connect_path, method: :post, class: "settings-form" do %>
+          <label class="field">
+            <span class="field__label">bunker URI</span>
+            <%= text_field_tag :bunker_uri, nil, class: "field__input", placeholder: "bunker://…", required: true, autocomplete: "off", spellcheck: "false" %>
+          </label>
+          <md-filled-button type="submit">
+            <span class="msr" slot="icon">key</span>
+            接続
+          </md-filled-button>
+        <% end %>
+        <p class="settings-card__body settings-card__body--muted">
+          URIは家のPCで <code>bin/nostr --bunker-secret</code> を実行すると発行されます。
+        </p>
+      <% end %>
+    <% else %>
+      <p class="settings-card__body settings-card__body--muted">
+        bunkerは無効です（デーモンに bunker.json がありません）。ローカル専用モードで動作中。
+      </p>
+    <% end %>
+  </section>
+
+  <section class="settings-card">
     <h2 class="settings-card__title">プロフィール</h2>
     <%= form_with url: settings_profile_path, method: :post, class: "settings-form" do %>
       <label class="field">
