@@ -563,16 +563,11 @@ module NostrTui
       flash(ok ? "signed out — signer locked" : "signout failed (offline?)")
     end
 
-    # NIP-46 "nostr connect": build a nostrconnect:// URI (one-time secret)
-    # and open a locally generated QR page in the browser (qrencode — no
-    # third-party QR service ever sees the URI). The pairing handler
-    # (kind 24133) is future work; the QR is ready for a phone signer.
-    # --- NIP-46 connect (settings tab "nostr connect") -----------------------
-    #
-    # The daemon IS the remote signer, so the phone is the client: we show its
-    # persistent bunker URI (bunker://…?relay=…&secret=…) as a scannable QR.
-    # The URI comes from the daemon's bunker_secret op; the secret never
-    # rotates, so re-pairing after a daemon restart needs no new QR.
+    # NIP-46 "nostr connect": the daemon IS the remote signer, so the phone
+    # is the client: we show its persistent bunker URI (bunker://…?relay=…&
+    # secret=…) as a QR — browser page first (qrencode), terminal QR as the
+    # fallback. The secret never rotates, so re-pairing after a daemon
+    # restart needs no new QR.
 
     # Settings tab: ask the daemon for the bunker URI. The answer lands in
     # drain("result") — async, so we only flash a hint here.
@@ -610,27 +605,20 @@ module NostrTui
       end
     end
 
-    # Opens the modal when the QR fits the terminal; otherwise hands off to
-    # the browser QR page (qrencode) or a plain-text modal.
+    # bunker URI -> QR: the browser page is the primary path (big, theme-
+    # proof, easy for a phone camera — and it can't be closed by the feed
+    # poll). Falls back to a terminal QR when qrencode is unavailable.
     def show_connect_modal
       uri = @bunker_uri.to_s
       return flash("bunker URI を取得できませんでした") if uri.empty?
 
-      lines = begin
-        self.class.qr_block_lines(uri)
-      rescue LoadError, StandardError
-        nil
-      end
-      width = lines ? lines.map { |l| Renderer.dw(l) }.max : 0
-      if lines && width + 4 <= Curses.stdscr.maxx && lines.size + 7 <= Curses.lines
-        @modal = { uri: uri, qr: lines, width: width }
-      else
-        open_connect_page(uri)
-      end
+      open_connect_page(uri)
     end
 
-    # Fallback for tiny terminals / missing rqrcode gem: browser QR (system
-    # qrencode), or a text-only modal when even qrencode is unavailable.
+    # Primary connect QR: render the URI as SVG via qrencode, wrap it in a
+    # local page, open it in the browser. Nothing leaves this machine — no
+    # third-party QR service ever sees the URI. Fallback when qrencode is
+    # missing/fails: terminal QR if it fits, else a text-only modal.
     def open_connect_page(uri)
       require "tempfile"
       svg = Tempfile.create(["birdwatch-bunker", ".svg"]) # 0600, unpredictable name
@@ -640,13 +628,31 @@ module NostrTui
       rendered &&= File.exist?(svg_path) && File.size(svg_path).positive?
       if rendered
         open_external("xdg-open #{Shellwords.escape(bunker_qr_page(uri, svg_path))}")
-        flash("QRをブラウザで開きました(端末が小さいかrqrcodeが無いため)")
+        flash("QRをブラウザで開きました — スマホで読み取って設定に貼り付け")
+        return
+      end
+      lines = begin
+        self.class.qr_block_lines(uri)
+      rescue LoadError, StandardError
+        nil
+      end
+      if terminal_fits?(lines)
+        @modal = { uri: uri, qr: lines, width: lines.map { |l| Renderer.dw(l) }.max }
       else
         @modal = { uri: uri, qr: nil, width: [uri.length + 8, 60].min }
-        flash("rqrcodeが無いためURI表示のみ — gem install rqrcode 推奨")
+        flash("URI表示のみ — qrencode も rqrcode も無いため (gem install rqrcode 推奨)")
       end
     ensure
       File.delete(svg_path) if svg_path && File.exist?(svg_path)
+    end
+
+    # Terminal QR fit check; nil lines never fit. Curses is only up in the
+    # live TUI, so headless callers (tests) can override this method.
+    def terminal_fits?(lines)
+      return false unless lines
+
+      width = lines.map { |l| Renderer.dw(l) }.max
+      width + 4 <= Curses.stdscr.maxx && lines.size + 7 <= Curses.lines
     end
 
     # Render the URI as an SVG QR via qrencode and wrap it in a tiny page.

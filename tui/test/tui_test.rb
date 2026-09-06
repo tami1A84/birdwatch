@@ -743,6 +743,45 @@ class TuiTest < Minitest::Test
     assert_includes app.instance_variable_get(:@flash).to_s, "bunker unavailable"
   end
 
+  def test_connect_qr_opens_browser_page_when_qrencode_renders
+    skip "qrencode not installed" unless system("which qrencode > #{File::NULL} 2>&1")
+    app = NostrTui::App.new(timeline: NostrTui::Timeline.new)
+    app.instance_variable_set(:@bunker_uri, "bunker://abc")
+    opened = []
+    app.define_singleton_method(:open_external) { |cmd| opened << cmd }
+    app.send(:show_connect_modal)
+
+    assert_equal 1, opened.size
+    assert_includes opened.first, "xdg-open"
+    assert_includes opened.first, "birdwatch-bunker" # temp QR page (0600)
+    assert_nil app.instance_variable_get(:@modal)    # no terminal modal in the way
+    assert_includes app.instance_variable_get(:@flash).to_s, "ブラウザ"
+  end
+
+  def test_connect_qr_falls_back_to_terminal_modal_without_qrencode
+    app = NostrTui::App.new(timeline: NostrTui::Timeline.new)
+    app.instance_variable_set(:@bunker_uri, "bunker://#{'ab' * 32}?relay=wss%3A%2F%2Fnos.lol&secret=#{'0' * 32}")
+    app.define_singleton_method(:system) { |*| false } # qrencode fails/missing
+    app.define_singleton_method(:terminal_fits?) { |lines| !lines.nil? }
+    app.send(:show_connect_modal)
+
+    modal = app.instance_variable_get(:@modal)
+    assert modal && modal[:qr], "terminal QR modal opens as fallback"
+    assert_empty app.instance_variable_get(:@flash).to_s # nothing to apologize for
+  end
+
+  def test_connect_qr_text_only_modal_when_no_renderer_available
+    app = NostrTui::App.new(timeline: NostrTui::Timeline.new)
+    app.instance_variable_set(:@bunker_uri, "bunker://abc")
+    app.define_singleton_method(:system) { |*| false } # qrencode fails/missing
+    app.define_singleton_method(:terminal_fits?) { |_lines| false } # no rqrcode / tiny terminal
+    app.send(:show_connect_modal)
+
+    modal = app.instance_variable_get(:@modal)
+    assert modal && modal[:qr].nil?, "URI-only modal opens"
+    assert_includes app.instance_variable_get(:@flash).to_s, "URI表示のみ"
+  end
+
   def test_request_connect_qr_sends_op_and_handles_offline
     app = NostrTui::App.new(timeline: NostrTui::Timeline.new)
     sent = []
