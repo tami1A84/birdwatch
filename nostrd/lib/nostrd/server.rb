@@ -139,6 +139,8 @@ module Nostrd
       when "bunker_secret" then bunker_secret_op(conn, msg)
       when "bunker_list" then bunker_list_op(conn, msg)
       when "bunker_forget" then bunker_forget_op(conn, msg)
+      when "sign_raw" then sign_raw_op(conn, msg)
+      when "publish_raw" then publish_raw_op(conn, msg)
       else reply(conn, ev: "error", code: "unknown_op", message: msg["op"].to_s)
       end
     end
@@ -439,6 +441,30 @@ module Nostrd
 
       info = @bunker.enable
       reply(conn, ev: "result", id: msg["id"], data: info)
+    rescue StandardError => e
+      reply(conn, ev: "ack", id: msg["id"], ok: false, error: e.message)
+    end
+
+    # Raw-sign a vetted event (kind allowlist lives in Signer#sign_raw) for
+    # local flows the action vocabulary does not cover: Blossom NIP-98 auth,
+    # NIP-5A nsite manifests. Reply carries the full signed event.
+    def sign_raw_op(conn, msg)
+      event = @signer.call("sign_raw", msg["params"] || {})
+      reply(conn, ev: "result", id: msg["id"], data: { "event" => event })
+    rescue StandardError => e
+      reply(conn, ev: "ack", id: msg["id"], ok: false, error: e.message)
+    end
+
+    # sign_raw + hand the signed event to the publisher (relays) — nsite
+    # manifest updates. params.urls optionally restricts the target relays
+    # (the publisher lambda fans out to every connected relay by default).
+    def publish_raw_op(conn, msg)
+      event = @signer.call("sign_raw", msg["params"] || {})
+      raise ArgumentError, "daemon is not live (no relay publisher)" unless @publisher
+
+      published = @publisher.call(event)
+      reply(conn, ev: "result", id: msg["id"],
+                 data: { "event" => event, "published_to" => published })
     rescue StandardError => e
       reply(conn, ev: "ack", id: msg["id"], ok: false, error: e.message)
     end

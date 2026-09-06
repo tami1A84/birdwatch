@@ -168,9 +168,41 @@ module Nostrd
         sign_event(30617, "", tags)
       when "get_public_key"
         @pubkey
+      when "sign_raw"
+        sign_raw(params)
       else
         raise ArgumentError, "unknown action #{name}"
       end
+    end
+
+    # Vetted raw-signing for local tools. The default boundary is intent
+    # actions only ("never raw events from clients"); these kinds are the
+    # minimum exceptions local flows need and carry no free-form user
+    # content: NIP-98 http auth (Blossom uploads), the user's Blossom server
+    # list (kind 10063), and NIP-5A nsite manifests/snapshots. Everything
+    # else stays refused.
+    RAW_SIGN_KINDS = [27235, 10063, 15128, 35128, 5128].freeze
+    RAW_SIGN_MAX_CONTENT = 64 * 1024
+
+    def sign_raw(params)
+      kind = params["kind"]
+      unless RAW_SIGN_KINDS.include?(kind)
+        raise ArgumentError, "kind #{kind.inspect} is not raw-signable"
+      end
+
+      tags = params["tags"]
+      unless tags.is_a?(Array) && tags.all? { |t| t.is_a?(Array) && t.all?(String) }
+        raise ArgumentError, "tags must be an array of string arrays"
+      end
+
+      content = params["content"]
+      raise ArgumentError, "content must be a string" unless content.is_a?(String)
+      raise ArgumentError, "content too large" if content.bytesize > RAW_SIGN_MAX_CONTENT
+
+      created_at = params["created_at"] || Time.now.to_i
+      raise ArgumentError, "created_at must be an integer" unless created_at.is_a?(Integer)
+
+      sign_event(kind, content, tags, created_at: created_at)
     end
 
     # NIP-42 auth response (kind 22242): relay + challenge tags, empty body.
