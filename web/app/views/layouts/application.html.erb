@@ -9,16 +9,20 @@
     <%= csrf_meta_tags %>
     <%= csp_meta_tag %>
     <link rel="manifest" href="<%= pwa_manifest_path %>">
-    <link rel="icon" href="/icon.svg" type="image/svg+xml">
+    <link rel="icon" href="/favicon.ico" sizes="16x16 32x32 48x48">
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png">
     <%= stylesheet_link_tag :application, "data-turbo-track": "reload" %>
     <%= javascript_include_tag "application", type: "module", "data-turbo-track": "reload" %>
   </head>
   <body class="page-<%= controller_name %>" data-controller="confirm">
     <header class="app-bar">
+      <a class="app-bar__brand" href="<%= root_path %>" aria-label="birdwatch ホーム">
+        <img class="app-bar__logo" src="/icon-64.png" alt="birdwatch" width="28" height="28">
+      </a>
+      <div class="app-bar__title"><%= content_for(:title) || "birdwatch" %></div>
       <md-icon-button class="app-bar__button" href="<%= favorites_path %>" aria-label="お気に入り">
         <span class="msr">thumb_up</span>
       </md-icon-button>
-      <div class="app-bar__title"><%= content_for(:title) || "birdwatch" %></div>
       <md-icon-button class="app-bar__button" href="<%= search_path %>" aria-label="検索">
         <span class="msr">search</span>
       </md-icon-button>

@@ -273,6 +273,20 @@ md-fab {
 
 .app-bar__button { --md-icon-button-icon-size: 24px; }
 
+.app-bar__brand {
+  display: flex;
+  align-items: center;
+  margin-left: 4px;
+  border-radius: 9px; /* hit target stays friendly, art gets the rounding */
+}
+
+.app-bar__logo {
+  display: block;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+}
+
 /* ------------------------------------------------------------- layout */
 
 .content {
