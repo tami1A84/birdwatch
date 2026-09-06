@@ -11,7 +11,9 @@
 #      daemon via the sign_raw socket op)
 #   3. build the kind 35128 manifest (d=<name>, x aggregate hash, server
 #      hints), sign + publish it through the daemon (publish_raw op)
-#   4. print the canonical gateway URLs
+#   4. rebroadcast the signed manifest to the relays nsite gateways watch
+#      (the daemon's pool may not overlap them; no re-signing involved)
+#   5. print the canonical gateway URLs
 #
 # The daemon must be running and unlocked; it holds the key, this script
 # never sees it. Run `bin/nostr` (daemon) again after upgrading nostrd so
@@ -47,6 +49,21 @@ DEFAULT_SERVERS = %w[
 # NIP-5A host gateways that exist today. They resolve nsites by watching
 # relays for manifest events; a fresh publish can take a bit to appear.
 GATEWAYS = %w[nsite.lol].freeze
+
+# Relays nsite gateways are known to watch (nsite.lol's set, 2026-09-06).
+# The daemon publishes to its own pool, which need not overlap this list —
+# the manifest is already signed, so rebroadcasting it verbatim afterwards
+# costs nothing and needs no key.
+GATEWAY_RELAYS = %w[
+  wss://relay.damus.io
+  wss://nos.lol
+  wss://relay.nostr.band
+  wss://nostr.wine
+  wss://relay.primal.net
+  wss://relay.nostr.bg
+  wss://relay.snort.social
+  wss://purplepag.es
+].freeze
 
 def die(msg)
   warn "nostr-nsite: #{msg}"
@@ -90,6 +107,62 @@ rescue StandardError => e
   [false, "ERR #{e.class}"]
 end
 
+# Rebroadcast an already-signed event to one relay, verbatim. Returns
+# [ok, info]. Short-lived blocking connection — no threads to clean up.
+def broadcast(url, event, timeout: 8)
+  uri = URI.parse(url)
+  tls = uri.scheme == "wss"
+  port = uri.port || (tls ? 443 : 80)
+  tcp = TCPSocket.new(uri.host, port)
+  sock = tcp
+  if tls
+    ssl = OpenSSL::SSL::SSLSocket.new(tcp)
+    ssl.sync_close = true
+    ssl.hostname = uri.host
+    ssl.connect
+    sock = ssl
+  end
+  key = SecureRandom.base64(16)
+  path = uri.path.empty? ? "/" : uri.path
+  sock.write(
+    "GET #{path} HTTP/1.1\r\nHost: #{uri.host}:#{port}\r\n" \
+    "Upgrade: websocket\r\nConnection: Upgrade\r\n" \
+    "Sec-WebSocket-Key: #{key}\r\nSec-WebSocket-Version: 13\r\n\r\n"
+  )
+  deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
+  head = +""
+  while !head.include?("\r\n\r\n") && Process.clock_gettime(Process::CLOCK_MONOTONIC) < deadline
+    head << sock.read_nonblock(4096, exception: false)
+  end
+  raise "handshake: #{head[/\AHTTP\/[\d.]+\s*(\S+)/, 1]}" unless head.include?(" 101")
+
+  sock.write(WebSocket::Frame::Outgoing::Client.new(
+    data: JSON.generate(["EVENT", event]), type: :text, version: 13
+  ).to_s)
+  frames = WebSocket::Frame::Incoming::Client.new
+  result = nil
+  while result.nil? && Process.clock_gettime(Process::CLOCK_MONOTONIC) < deadline
+    data = sock.read_nonblock(4096, exception: false)
+    if data == :wait_readable
+      sleep 0.05
+    elsif data.nil?
+      break
+    else
+      frames << data
+      while (frame = frames.next)
+        msg = JSON.parse(frame.to_s) rescue next
+        result = msg[2] == true if msg.is_a?(Array) && msg[0] == "OK" && msg[1] == event["id"]
+      end
+    end
+  end
+  [result == true, result.nil? ? "timeout" : "accepted"]
+rescue StandardError => e
+  [false, e.class.to_s]
+ensure
+  begin; sock&.close; rescue StandardError; end
+  begin; tcp&.close; rescue StandardError; end
+end
+
 opts = { name: "birdwatch", servers: [] }
 OptionParser.new do |o|
   o.banner = "usage: nostr-nsite --socket PATH <dir> [options]"
@@ -98,6 +171,10 @@ OptionParser.new do |o|
   o.on("--title TITLE") { |v| opts[:title] = v }
   o.on("--desc DESC") { |v| opts[:desc] = v }
   o.on("--server URL", "extra blossom server (repeatable)") { |v| opts[:servers] << v }
+  o.on("--gateway-relay URL", "extra relay to rebroadcast the manifest to (repeatable/comma-sep)") do |v|
+    (opts[:gateway_relays] ||= []).concat(v.split(","))
+  end
+  o.on("--no-gateway-relays", "skip rebroadcasting the manifest to gateway relays") { |v| opts[:skip_gateway_relays] = v }
 end.parse!
 die "a directory to publish is required" unless ARGV[0]
 die "no such directory: #{ARGV[0]}" unless File.directory?(ARGV[0])
@@ -145,7 +222,20 @@ tags = path_tags + [["x", aggregate, "aggregate"], ["d", opts[:name]]] +
 event = socket_op(opts[:socket], "publish_raw",
                   kind: 35128, content: "", tags: tags)["event"]
 
-# 4. canonical URLs (NIP-5A address format: <pubkeyB36><d>.host)
+# 4. rebroadcast the signed manifest verbatim to the relays nsite gateways
+#    watch. The daemon publishes to its own pool, which may not overlap
+#    that set — a signed event needs no key to relay (2026-09-06: the
+#    gateway kept serving the previous version until this step existed).
+unless opts[:skip_gateway_relays]
+  targets = (GATEWAY_RELAYS + (opts[:gateway_relays] || [])).uniq
+  puts "rebroadcasting manifest to #{targets.size} gateway relays:"
+  targets.each do |u|
+    ok, info = broadcast(u, event)
+    puts "  #{URI.parse(u).host}: #{ok ? 'accepted' : "not accepted (#{info})"}"
+  end
+end
+
+# 5. canonical URLs (NIP-5A address format: <pubkeyB36><d>.host)
 b36 = event["pubkey"].to_i(16).to_s(36)
 puts JSON.pretty_generate(event)
 puts
