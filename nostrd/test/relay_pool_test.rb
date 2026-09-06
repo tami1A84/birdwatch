@@ -207,6 +207,47 @@ class RelayPoolTest < Minitest::Test
     refute pool.connections["wss://a"].sent.any? { |f| JSON.parse(f)[1] == "s2" && JSON.parse(f)[0] == "REQ" }
   end
 
+  # The bunker inbox rides a priority slot: it must start immediately even
+  # when the politeness cap is full and normal REQs are queued — a queued
+  # signer inbox is invisible to NIP-46 clients and looks like a dead bunker.
+  def test_bunker_sub_bypasses_cap_and_queue
+    pool = Nostrd::RelayPool.new(transport_class: StubTransport,
+                                 on_event: ->(_, _) {}, on_disconnect: ->(_, _) {},
+                                 max_subs_per_conn: 2)
+    pool.connect("wss://a")
+    pool.subscribe_person("wss://a", "s1", "pk1")
+    pool.subscribe_person("wss://a", "s2", "pk2")
+    pool.subscribe_person("wss://a", "s3", "pk3") # over cap -> queued
+    refute pool.sub_live?("wss://a", "s3"), "normal REQ stays queued over cap"
+
+    pool.subscribe_bunker("wss://a", "bunker", "pk_me")
+    assert pool.sub_live?("wss://a", "bunker"), "bunker inbox starts despite full cap"
+    assert pool.sub_live?("wss://a", "s1")
+
+    pool.subscribe_bunker("wss://a", "bunker", "pk_me") # tick re-issue: idempotent
+    live = pool.instance_variable_get(:@live_subs)["wss://a"]
+    assert_equal 1, live.count("bunker"), "no double booking of a live sub"
+  end
+
+  # A REQ fired while the relay is down must not count as live (it was never
+  # sent). The next ensure_subscribed tick retries it.
+  def test_bunker_sub_retries_until_relay_connects
+    pool = Nostrd::RelayPool.new(transport_class: StubTransport,
+                                 on_event: ->(_, _) {}, on_disconnect: ->(_, _) {})
+    pool.subscribe_bunker("wss://a", "bunker", "pk_me") # not connected yet
+    refute pool.sub_live?("wss://a", "bunker"), "unsent REQ is not live"
+
+    pool.connect("wss://a")
+    refute pool.sub_live?("wss://a", "bunker"), "connecting alone resends nothing"
+
+    pool.subscribe_bunker("wss://a", "bunker", "pk_me") # tick retry
+    assert pool.sub_live?("wss://a", "bunker")
+    req = JSON.parse(pool.connections["wss://a"].sent.last)
+    assert_equal %w[REQ bunker], req.first(2)
+    assert_equal [24133], req[2]["kinds"]
+    assert_equal ["pk_me"], req[2]["#p"]
+  end
+
   def test_seek_profile_sends_kind0_req
     @pool.connect("wss://r.example")
     assert @pool.seek_profile("wss://r.example", "p1", "pk_alice")

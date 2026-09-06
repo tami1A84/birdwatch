@@ -80,8 +80,10 @@ start_daemon() {
     "${extra[@]}" >>"$LOG" 2>&1 </dev/null 3<<<"$pass" &
   echo $! >"$PIDFILE"
 
+  # 30s: bind is sub-second once dialing is off-main, but scrypt unlock and
+  # slow disks deserve headroom before declaring the daemon dead.
   local i
-  for i in $(seq 1 20); do
+  for i in $(seq 1 60); do
     alive && return 0
     kill -0 "$(cat "$PIDFILE")" 2>/dev/null || break # daemon died
     sleep 0.5

@@ -33,14 +33,29 @@ class BunkerTest < Minitest::Test
   end
 
   class FakePool
-    attr_reader :published
+    attr_reader :published, :bunker_attempts
 
-    def initialize = (@published = [])
+    def initialize
+      @published = []
+      @live = {} # url => [sub_id] — mirrors RelayPool#live_subs
+      @bunker_attempts = Hash.new(0)
+    end
 
     def publish(event, urls: nil)
       @published << [event, urls]
       [urls].flatten.compact
     end
+
+    def subscribe_bunker(url, sub_id, _my_pubkey)
+      @bunker_attempts[url] += 1
+      (@live[url] ||= []) << sub_id
+      true
+    end
+
+    def sub_live?(url, sub_id) = (@live[url] || []).include?(sub_id)
+
+    # test hook: simulate a relay drop — slots die with the connection
+    def drop_relay(url) = @live.delete(url)
   end
 
   def setup
@@ -154,6 +169,35 @@ class BunkerTest < Minitest::Test
     bunker.handle_event({ "kind" => 24133, "pubkey" => CLIENT,
                           "tags" => [["p", @signer.pubkey]], "content" => "x" }, url: "ws://x")
     assert_empty bunker.session_pubkeys
+  end
+
+  # The kind-24133 inbox must self-heal: liveness is verified against the
+  # pool every tick, so a sub lost to a relay drop (slots die with the
+  # connection) is re-issued instead of staying silently dead.
+  def test_ensure_subscribed_reissues_after_relay_drop
+    pool = FakePool.new
+    bunker = Nostrd::Bunker.new(signer: @signer, config: config(secret: "ab" * 16), pool: pool)
+    urls = %w[wss://a wss://b]
+
+    bunker.ensure_subscribed(urls)
+    assert pool.sub_live?("wss://a", "bunker")
+    assert pool.sub_live?("wss://b", "bunker")
+
+    pool.drop_relay("wss://a")
+    bunker.ensure_subscribed(urls) # next 30s tick
+    assert pool.sub_live?("wss://a", "bunker"), "dropped relay re-subscribed"
+    assert_equal 2, pool.bunker_attempts["wss://a"]
+    assert_equal 1, pool.bunker_attempts["wss://b"], "live sub not re-issued"
+  end
+
+  def test_ensure_subscribed_noops_when_disabled_or_poolless
+    disabled_pool = FakePool.new
+    bunker = Nostrd::Bunker.new(signer: @signer, config: config(secret: nil), pool: disabled_pool)
+    bunker.ensure_subscribed(["wss://a"])
+    assert_empty disabled_pool.bunker_attempts.values, "disabled bunker never subscribes"
+
+    bunker = Nostrd::Bunker.new(signer: @signer, config: config(secret: "ab" * 16)) # pool: nil
+    bunker.ensure_subscribed(["wss://a"]) # must not raise
   end
 
   private

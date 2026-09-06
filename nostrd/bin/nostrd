@@ -209,7 +209,17 @@ if options[:live]
   )
   # --follow args are merged with follows persisted in the DB (survive restarts)
   f = (options[:follows] + store.follows).uniq
-  orchestrator.follow(*f) unless f.empty?
+  # follow() dials person relays synchronously (up to HANDSHAKE_TIMEOUT each,
+  # sequential). On the boot path that stalled the socket bind past the
+  # launcher's wait when slow/dead relays were in the dial set — dial
+  # off-main like the initial pool dials above.
+  Thread.new do
+    begin
+      orchestrator.follow(*f)
+    rescue StandardError => e
+      warn "boot follow: #{e.class}: #{e.message}"
+    end
+  end unless f.empty?
   # Off-main: each dial waits up to 5s on the handshake gate and dead relays
   # raise into the penalty box — a hung dial must not block the others, so
   # isolate each one.

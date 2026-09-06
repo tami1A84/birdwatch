@@ -87,7 +87,9 @@ module Nostrd
     # NIP-46 bunker transport: requests arrive encrypted to us (kind 24133,
     # p-tagged to our pubkey). Persistent stream sub, like the inbox.
     def subscribe_bunker(url, sub_id, my_pubkey)
-      queue_req(url, sub_id, NostrCore::Subscription.req(sub_id, { "#p": [my_pubkey], kinds: [24133] }), false)
+      # priority: the signer's inbox must never wait behind seek storms or
+      # the per-connection cap — a queued sub is invisible to NIP-46 clients.
+      queue_req(url, sub_id, NostrCore::Subscription.req(sub_id, { "#p": [my_pubkey], kinds: [24133] }), false, priority: true)
     end
 
     def seek_relay_list(url, sub_id, pubkey)
@@ -112,6 +114,13 @@ module Nostrd
     def transmit_close(url, sub_id)
       transmit(url, NostrCore::Subscription.close(sub_id))
       req_finished(url, sub_id)
+    end
+
+    # True only when sub_id's REQ is actually in flight on a live connection.
+    # Queued-but-not-started subs and dropped connections don't count —
+    # callers re-issue until this turns true (bunker inbox self-heal).
+    def sub_live?(url, sub_id)
+      @connections.key?(url) && (@live_subs[url] || []).include?(sub_id)
     end
 
     # Publish a signed event to every connected relay (outbox refinement —
@@ -186,8 +195,14 @@ module Nostrd
     # "too many concurrent REQs"). REQs beyond the per-connection cap queue
     # here and start FIFO as earlier subs CLOSE. One-shot seeks hold a slot
     # only until their EOSE; stream subs hold one until unsubscribed/dropped.
-    def queue_req(url, sub_id, frame, one_shot)
-      if (@live_subs[url] || []).size >= @max_subs || (@queued[url] || []).any?
+    # priority: true bypasses the cap and queue — reserved for the bunker
+    # inbox (one REQ per relay), which clients depend on and must never be
+    # starved behind seek storms or invisible while queued.
+    def queue_req(url, sub_id, frame, one_shot, priority: false)
+      if (@live_subs[url] || []).include?(sub_id)
+        return true # already in flight; re-issuing would double-book the slot
+      end
+      if !priority && ((@live_subs[url] || []).size >= @max_subs || (@queued[url] || []).any?)
         (@queued[url] ||= []) << [sub_id, frame, one_shot]
         return true # accepted; starts when a slot frees
       end
@@ -195,9 +210,12 @@ module Nostrd
     end
 
     def start_req(url, sub_id, frame, one_shot)
+      # Send first: a REQ that never reached the relay must not hold a slot
+      # or count as live — queue/priority callers re-issue on a later tick.
+      return false unless transmit(url, frame)
       one_shot(url, sub_id) if one_shot
       (@live_subs[url] ||= []) << sub_id
-      transmit(url, frame)
+      true
     end
 
     # Free the slot of a finished REQ (CLOSE sent, or cancelled while queued)

@@ -119,7 +119,6 @@ module Nostrd
       @handler = handler || Nip46Handler.new(signer: signer, config: config)
       @default_relays = Array(default_relays)
       @logger = logger
-      @subs = {} # url => true — relays currently carrying the bunker sub
     end
 
     # Enabled only when a config with a secret exists (bunker.json present).
@@ -162,15 +161,17 @@ module Nostrd
 
     # Persistent kind-24133 inbox: one "bunker" sub per connected relay.
     # Called from the orchestrator tick so the sub survives reconnects.
+    # Liveness is verified against the pool on every call — a sub that was
+    # never started (REQ cap queueing) or lost its slot (relay drop clears
+    # live subs) is re-issued, never assumed alive from local bookkeeping.
     def ensure_subscribed(urls)
       return unless enabled? && @pool
 
       urls.each do |url|
-        next if @subs.key?(url)
+        next if @pool.sub_live?(url, "bunker")
 
-        @subs[url] = true if @pool.subscribe_bunker(url, "bunker", @my_pubkey)
+        @pool.subscribe_bunker(url, "bunker", @my_pubkey)
       end
-      (@subs.keys - urls).each { |url| @subs.delete(url) }
     end
 
     # Configured bunker relays must be dialed even if gossip never picks them.
