@@ -154,3 +154,26 @@ bin/nostr --bunker-forget <64hex>    # クライアントを失効
 
 - `nostr_core/nip44.rb`: NIP-44 v2 実装(公式ベクトル全件通過)。
   `encrypt/decrypt(sk32, pk32, …)`、テスト用に `nonce:` 指定可。
+
+## 生署名 op (NIP-5A / Blossom 用, v0 追加)
+
+vault の「action のみ、生イベントは署名しない」境界の例外として、
+**kind 許可リスト付き**の生署名 op を追加した。許可リスト外の kind は
+`ack ok:false error:"… not raw-signable"` で拒否される。
+
+- 許可 kind: `27235`(NIP-98) / `24242`(Blossom BUD-01/02 auth) /
+  `10063`(Blossom サーバ一覧) / `15128` `35128` `5128`(NIP-5A nsite)
+- `sign_raw` (params `{kind, content, tags, created_at?}`):
+  形状検証(tags は文字列配列の配列、content は 64KiB 以下の文字列)を
+  通した事件を署名して `{event}` を返す。
+- `publish_raw` (同 params + `urls?`): sign_raw して publisher
+  (書き込みリレー群)へ publish。`{event, published_to}` を返す。
+
+### CLI (bin/nostr)
+
+```sh
+bin/nostr --nsite-publish DIR [--name birdwatch] [--title T] [--server URL]
+# DIR を静的サイトとして Blossom にアップロード(kind 24242 auth、
+# デーモン署名)し、kind 35128 マニフェストをデーモン署名+publish。
+# ゲートウェイURL(<pubkeyB36><d>.nsite-…)を表示する。
+```

@@ -1,0 +1,157 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# nostr-nsite — publish a static directory as a NIP-5A named site (nsite).
+#
+#   nostr-nsite --socket /run/user/1000/nostrd.sock <dir> [options]
+#
+# Flow (NIP-5A + Blossom BUD-01/02):
+#   1. hash every file under <dir>; paths become manifest "path" tags
+#   2. upload each blob (PUT /upload, Blossom auth kind 24242 signed by the
+#      daemon via the sign_raw socket op)
+#   3. build the kind 35128 manifest (d=<name>, x aggregate hash, server
+#      hints), sign + publish it through the daemon (publish_raw op)
+#   4. print the canonical gateway URLs
+#
+# The daemon must be running and unlocked; it holds the key, this script
+# never sees it. Run `bin/nostr` (daemon) again after upgrading nostrd so
+# the sign_raw/publish_raw ops exist.
+
+require "net/http"
+require "json"
+require "digest"
+require "base64"
+require "uri"
+require "socket"
+require "optparse"
+
+# extension -> content-type (keep minimal; unknown files upload as
+# application/octet-stream, which some servers reject)
+MIME = {
+  ".html" => "text/html", ".htm" => "text/html", ".js" => "text/javascript",
+  ".mjs" => "text/javascript", ".css" => "text/css", ".json" => "application/json",
+  ".webmanifest" => "application/manifest+json", ".png" => "image/png",
+  ".jpg" => "image/jpeg", ".jpeg" => "image/jpeg", ".gif" => "image/gif",
+  ".svg" => "image/svg+xml", ".webp" => "image/webp", ".ico" => "image/x-icon",
+  ".txt" => "text/plain", ".woff" => "font/woff", ".woff2" => "font/woff2",
+  ".map" => "application/json", ".xml" => "application/xml"
+}.freeze
+
+DEFAULT_SERVERS = %w[
+  https://files.sovbit.host
+  https://nostr.download
+  https://cdn.nostrcheck.me
+  https://blossom.primal.net
+].freeze
+
+# nsites gateways known to resolve; the manifest is discoverable by any of
+# them that watch the daemon's write relays. We print the canonical NIP-5A
+# URL for each regardless — they 404 until they pick the manifest up.
+GATEWAYS = %w[nsite.lol nsite.cash nsite.app].freeze
+
+def die(msg)
+  warn "nostr-nsite: #{msg}"
+  exit 1
+end
+
+# One request/response over the daemon's NDJSON socket. The ops answer with
+# exactly one line; anything else is a protocol error worth aborting on.
+def socket_op(path, op, params = {})
+  UNIXSocket.open(path) do |s|
+    s.write(JSON.generate(op: op, id: "nsite_#{Process.pid}", params: params) + "\n")
+    resp = JSON.parse(s.gets.to_s)
+    die "daemon said: #{resp['error'] || 'no reply'}" unless
+      resp["ev"] == "result" && resp.fetch("ok", true)
+
+    resp["data"]
+  end
+rescue Errno::ENOENT, Errno::ECONNREFUSED
+  die "nostrd not reachable at #{path} — start it first: nostr"
+rescue JSON::ParserError
+  die "daemon returned garbage on #{path}"
+end
+
+def sign_auth(socket_path, url, method:, x: nil)
+  tags = [["t", "upload"], ["u", url], ["method", method], ["expiration", (Time.now.to_i + 3600).to_s]]
+  tags.insert(1, ["x", x]) if x
+  socket_op(socket_path, "sign_raw", kind: 24242, content: "", tags: tags)["event"]
+end
+
+def upload(socket_path, server, sha, data, mime)
+  uri = URI("#{server}/upload")
+  auth = sign_auth(socket_path, uri.to_s, method: "PUT", x: sha)
+  req = Net::HTTP::Put.new(uri)
+  req.body = data
+  req["Authorization"] = "Nostr #{Base64.strict_encode64(JSON.generate(auth))}"
+  req["Content-Type"] = mime
+  res = Net::HTTP.start(uri.host, uri.port, use_ssl: true, open_timeout: 8,
+                        read_timeout: 30) { |http| http.request(req) }
+  [res.code.to_i.between?(200, 299), "#{res.code} #{res.body.to_s[0, 60].gsub(/\s+/, ' ')}"]
+rescue StandardError => e
+  [false, "ERR #{e.class}"]
+end
+
+opts = { name: "birdwatch", servers: [] }
+OptionParser.new do |o|
+  o.banner = "usage: nostr-nsite --socket PATH <dir> [options]"
+  o.on("--socket PATH") { |v| opts[:socket] = v }
+  o.on("--name NAME", "named-site d tag (1-13 chars, lowercase)") { |v| opts[:name] = v.downcase }
+  o.on("--title TITLE") { |v| opts[:title] = v }
+  o.on("--desc DESC") { |v| opts[:desc] = v }
+  o.on("--server URL", "extra blossom server (repeatable)") { |v| opts[:servers] << v }
+end.parse!
+die "a directory to publish is required" unless ARGV[0]
+die "no such directory: #{ARGV[0]}" unless File.directory?(ARGV[0])
+die "--socket is required" unless opts[:socket]
+die "bad --name #{opts[:name].inspect}" unless opts[:name].match?(/\A[a-z0-9-]{1,13}\z/) && !opts[:name].end_with?("-")
+
+root = File.realpath(ARGV[0])
+files = Dir.glob("#{root}/**/*", File::FNM_DOTMATCH).select { |f| File.file?(f) }
+die "no files under #{root}" if files.empty?
+
+# 1. hash (paths are absolute-from-root, matching NIP-5A "/absolute/path")
+paths = files.map { |f| [f.delete_prefix("#{root}/").prepend("/"), f] }
+             .sort_by { |rel, _| rel }
+blobs = paths.map do |rel, abs|
+  data = File.binread(abs)
+  [rel, Digest::SHA256.hexdigest(data), data, MIME[File.extname(rel).downcase]]
+end
+
+# 2. upload (best effort per server; one success per blob is enough — GETs
+# are anonymous and content-addressed)
+servers = (DEFAULT_SERVERS + opts[:servers]).uniq
+ok_servers = []
+blobs.each do |rel, sha, data, mime|
+  mime ||= "application/octet-stream"
+  uploaded = []
+  servers.each do |server|
+    ok, info = upload(opts[:socket], server, sha, data, mime)
+    uploaded << server if ok
+    puts "  #{rel} -> #{File.basename(URI(server).host)}: #{info}" if ok || uploaded.empty?
+    break if ok && uploaded.size >= 2 # two healthy copies per blob
+  end
+  ok_servers |= uploaded
+  die "no server accepted #{rel} (#{sha})" if uploaded.empty?
+end
+
+# 3. manifest: kind 35128 with path/x/server tags (NIP-5A)
+path_tags = blobs.map { |rel, sha, _| ["path", rel, sha] }
+aggregate = Digest::SHA256.hexdigest(
+  blobs.map { |rel, sha, _| "#{sha} #{rel}\n" }.sort.join
+)
+tags = path_tags + [["x", aggregate, "aggregate"], ["d", opts[:name]]] +
+       ok_servers.map { |s| ["server", s] } +
+       [["title", opts[:title] || opts[:name]]] +
+       (opts[:desc] ? [["description", opts[:desc]]] : [])
+event = socket_op(opts[:socket], "publish_raw",
+                  kind: 35128, content: "", tags: tags)["event"]
+
+# 4. canonical URLs (NIP-5A address format: <pubkeyB36><d>.host)
+b36 = event["pubkey"].to_i(16).to_s(36)
+puts JSON.pretty_generate(event)
+puts
+puts "published kind 35128 d=#{opts[:name]} (x=#{aggregate[0, 16]}…)"
+puts "manifest id: #{event['id']}"
+GATEWAYS.each do |gw|
+  puts "  https://#{b36}#{opts[:name]}.#{gw}/"
+end

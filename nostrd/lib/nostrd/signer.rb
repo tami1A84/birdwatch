@@ -178,10 +178,10 @@ module Nostrd
     # Vetted raw-signing for local tools. The default boundary is intent
     # actions only ("never raw events from clients"); these kinds are the
     # minimum exceptions local flows need and carry no free-form user
-    # content: NIP-98 http auth (Blossom uploads), the user's Blossom server
-    # list (kind 10063), and NIP-5A nsite manifests/snapshots. Everything
-    # else stays refused.
-    RAW_SIGN_KINDS = [27235, 10063, 15128, 35128, 5128].freeze
+    # content: NIP-98/Blossom http auth (Blossom BUD-01 uses 24242, NIP-98
+    # 27235), the user's Blossom server list (kind 10063), and NIP-5A nsite
+    # manifests/snapshots. Everything else stays refused.
+    RAW_SIGN_KINDS = [27235, 24242, 10063, 15128, 35128, 5128].freeze
     RAW_SIGN_MAX_CONTENT = 64 * 1024
 
     def sign_raw(params)

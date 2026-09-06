@@ -32,7 +32,7 @@ class RawSignTest < Minitest::Test
     assert NostrCore::Bip340.verify([@signer.pubkey].pack("H*"), [event[:id]].pack("H*"),
                                     [event[:sig]].pack("H*"))
 
-    [27235, 10063, 15128, 5128].each do |kind|
+    [27235, 24242, 10063, 15128, 5128].each do |kind|
       @signer.call("sign_raw", { "kind" => kind, "content" => "", "tags" => [] })
     end
 

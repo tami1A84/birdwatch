@@ -10,6 +10,7 @@
 #   nostr --bunker-secret   enable NIP-46 bunker / print the connection URI
 #   nostr --bunker-list     allowlisted NIP-46 clients + live sessions
 #   nostr --bunker-forget <hex>   revoke a NIP-46 client
+#   nostr --nsite-publish DIR     publish static DIR as NIP-5A nsite
 #
 # The daemon keeps running after the TUI exits, so the next `nostr` is
 # instant and there is only ever one daemon for the whole desktop.
@@ -147,6 +148,12 @@ case "${1:-}" in
       puts JSON.pretty_generate(resp["data"] || resp)
     end
   ' "$SOCKET" "$op_json" "$1"
+  ;;
+--nsite-publish)
+  # NIP-5A named site: hashes + uploads a static dir to Blossom (auth
+  # signed by the daemon), then signs+publishes the kind 35128 manifest.
+  alive || { echo "nostrd not reachable (socket $SOCKET) — start it first: nostr" >&2; exit 1; }
+  exec "$ROOT/nostrd/bin/nostr-nsite" --socket "$SOCKET" "$@"
   ;;
 --setup)
   exec "$DAEMON" --socket "$SOCKET" --vault "$VAULT" --db "$DB" --import-nsec --setup-only
