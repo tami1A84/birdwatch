@@ -164,7 +164,9 @@ module NostrTui
         drain_socket(client)
         if @modal
           paint_modal
+          Curses.stdscr.timeout = -1 # block: the modal stays until a keypress
           Curses.getch # any key closes; ESC here must not quit the app
+          Curses.stdscr.timeout = 250
           @modal = nil
           @renderer.reset # next paint() redraws every row the QR covered
           next
