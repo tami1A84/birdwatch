@@ -4,7 +4,7 @@ class ApplicationController < ActionController::Base
   allow_browser versions: :modern
 
   helper_method :nostrd, :display_name, :rel_time, :note_content, :me_info,
-                :short_pubkey, :valid_pubkey?
+                :short_pubkey, :valid_pubkey?, :avatar_url, :avatar_tag
 
   rescue_from NostrdClient::DaemonDown, NostrdClient::Timeout do |e|
     @error_message = e.message
@@ -38,6 +38,26 @@ class ApplicationController < ActionController::Base
 
   def valid_pubkey?(pk)
     pk.to_s.match?(/\A[0-9a-f]{64}\z/)
+  end
+
+  # Kind-0 profile picture URL. Only http(s)/data URLs — anything else
+  # (buddy lists, garbage content) falls back to the account_circle icon.
+  def avatar_url(pubkey)
+    p = nostrd.profile(pubkey)
+    url = p.is_a?(Hash) ? p["picture"].to_s : ""
+    return url if url.match?(/\Ahttps?:\/\//) || url.start_with?("data:image/")
+  rescue NostrdClient::Error
+    nil
+  end
+
+  # Circular avatar with the kind-0 picture; account_circle fallback (also
+  # swapped in client-side when the image fails to load — see application.js).
+  # klass sizes it: avatar--sm (36), avatar--md (40), avatar--lg (44), avatar--xl (64).
+  def avatar_tag(pubkey, klass: "avatar--lg")
+    pic = avatar_url(pubkey)
+    icon = '<span class="msr msr--outline avatar__fallback">account_circle</span>'
+    img = pic ? %(<img src="#{ERB::Util.html_escape(pic)}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer">) : ""
+    %(<span class="avatar #{klass}">#{icon}#{img}</span>).html_safe
   end
 
   def display_name(pubkey)

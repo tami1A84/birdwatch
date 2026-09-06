@@ -85,6 +85,15 @@ document.querySelectorAll("[data-fav-toggle]").forEach((btn) => {
   btn.dataset.fav = isFavorite(btn.dataset.favToggle) ? "1" : "0";
 });
 
+// broken avatar images → account_circle fallback (capture phase: error
+// doesn't bubble)
+document.addEventListener("error", (e) => {
+  const img = e.target;
+  if (img instanceof HTMLImageElement) {
+    img.closest(".avatar")?.classList.add("avatar--fallback");
+  }
+}, true);
+
 // ----- back = reverse transition -------------------------------------------
 // Cross-document view transitions: tag history traversals so the CSS can
 // play the forward transition in reverse (see application.css).

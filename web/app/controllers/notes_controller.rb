@@ -53,11 +53,11 @@ class NotesController < ApplicationController
   end
 
   # HTML fragment for live SSE prepends.
-  def card
+  def item
     note = nostrd.note(params[:id])
     return head :not_found unless note
 
-    render partial: "notes/card", locals: { note: note }
+    render partial: "notes/note", locals: { note: note }
   end
 
   # HTML fragment refreshing the comments/reactions section on detail.

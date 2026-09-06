@@ -48,12 +48,12 @@ export default class extends Controller {
     if (!feed) return;
     if (feed.querySelector(`[data-note-id="${event.id}"]`)) return;
 
-    const res = await fetch(`/notes/${encodeURIComponent(event.id)}/card`);
+    const res = await fetch(`/notes/${encodeURIComponent(event.id)}/item`);
     if (!res.ok) return;
     const html = await res.text();
     feed.insertAdjacentHTML("afterbegin", html);
     const card = feed.firstElementChild;
-    if (card) card.classList.add("note-card--enter");
+    if (card) card.classList.add("tl-item--enter");
   }
 
   async refreshSection(event) {
@@ -78,10 +78,30 @@ export default class extends Controller {
     for (const p of profiles) {
       if (!p || !p.pubkey) continue;
       const name = p.display_name || p.name || "";
-      if (!name) continue;
       document
-        .querySelectorAll(`[data-pubkey="${p.pubkey}"] [data-profile-name]`)
-        .forEach((el) => { el.textContent = name; });
+        .querySelectorAll(`[data-pubkey="${p.pubkey}"]`)
+        .forEach((el) => {
+          // the element itself or a descendant carries the live name
+          if (el.matches("[data-profile-name]") && name) el.textContent = name;
+          el.querySelectorAll("[data-profile-name]").forEach((n) => {
+            if (name) n.textContent = name;
+          });
+          // fill in avatars once a picture is known
+          const pic = typeof p.picture === "string" && p.picture.match(/^(https?:\/\/|data:image\/)/) ? p.picture : null;
+          if (!pic) return;
+          el.querySelectorAll(".avatar:not(.avatar--has-img)").forEach((a) => {
+            if (a.querySelector("img")) { a.classList.add("avatar--has-img"); return; }
+            const img = document.createElement("img");
+            img.loading = "lazy";
+            img.decoding = "async";
+            img.referrerPolicy = "no-referrer";
+            img.alt = "";
+            img.src = pic;
+            img.addEventListener("error", () => img.remove(), { once: true });
+            a.appendChild(img);
+            a.classList.add("avatar--has-img");
+          });
+        });
     }
   }
 }

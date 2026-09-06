@@ -198,6 +198,12 @@ class NostrdClient
       @mutex.synchronize { @pending.delete(id) }
       raise Timeout, "nostrd の応答がタイムアウトしました"
     end
+    unless resp
+      # Queue#pop returns nil on timeout; drop the orphaned request so a
+      # later unknown_op can't be misattributed to it
+      @mutex.synchronize { @pending.delete(id) }
+      raise Timeout, "nostrd の応答がタイムアウトしました"
+    end
 
     case resp["ev"]
     when "error"
@@ -287,6 +293,18 @@ class NostrdClient
       q = @mutex.synchronize { @pending.delete(frame["id"]) }
       if q
         q << frame
+      elsif frame["code"] == "unknown_op"
+        # Older daemons reply to unknown ops without echoing the request id.
+        # When exactly one request is outstanding, fail it fast with a clear
+        # message instead of letting it ride to the 20s timeout.
+        pair = @mutex.synchronize { @pending.size == 1 ? @pending.first : nil }
+        if pair
+          @mutex.synchronize { @pending.delete(pair[0]) }
+          pair[1] << { "ev" => "error", "code" => "unknown_op",
+                       "message" => "接続先の daemon は「#{frame["message"]}」に対応していません" }
+        else
+          fanout(frame)
+        end
       elsif frame["ev"] == "error"
         fanout(frame) # unsolicited (e.g. bad sub) — surface to the UI
       end

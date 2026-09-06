@@ -26,7 +26,7 @@
         <% p = @profiles[pk] %>
         <div class="follow-row" data-pubkey="<%= pk %>">
           <a class="profile-row" href="<%= profile_path(pk) %>">
-            <span class="msr profile-row__avatar">account_circle</span>
+            <%= avatar_tag(pk, klass: "avatar--sm") %>
             <span class="profile-row__body">
               <span class="profile-row__name" data-profile-name><%= p && (p["display_name"].presence || p["name"].presence) || short_pubkey(pk) %></span>
               <span class="profile-row__sub"><%= p && p["nip05"].presence || short_pubkey(pk) %></span>

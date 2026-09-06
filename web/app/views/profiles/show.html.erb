@@ -1,7 +1,7 @@
 <% content_for :title, "プロフィール" %>
 <div class="page" data-controller="live">
   <div class="profile-header">
-    <span class="msr profile-header__avatar">account_circle</span>
+    <%= avatar_tag(@pubkey, klass: "avatar--xl") %>
     <div class="profile-header__body">
       <div class="profile-header__name" data-profile-name data-pubkey="<%= @pubkey %>">
         <%= @profile && (@profile["display_name"].presence || @profile["name"].presence) || short_pubkey(@pubkey) %>
@@ -40,7 +40,7 @@
     </div>
   <% else %>
     <div class="feed feed--search">
-      <%= render partial: "notes/card", collection: @notes, as: :note %>
+      <%= render partial: "notes/note", collection: @notes, as: :note %>
     </div>
   <% end %>
 </div>

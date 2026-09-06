@@ -1,0 +1,15 @@
+<%# One Twitter-style timeline row: avatar link on the left, the note
+    (header row + body) fills the rest and opens the note detail.
+    Also served as an HTML fragment by /notes/:id/item for live SSE prepends. %>
+<article class="tl-item" data-note-id="<%= note["id"] %>" data-pubkey="<%= note["pubkey"] %>">
+  <a class="tl-item__avatar" href="<%= profile_path(note["pubkey"]) %>" aria-label="<%= display_name(note["pubkey"]) %> のプロフィール">
+    <%= avatar_tag(note["pubkey"], klass: "avatar--lg") %>
+  </a>
+  <a class="tl-item__main" href="<%= note_path(note["id"]) %>">
+    <span class="tl-item__head">
+      <span class="tl-item__name" data-profile-name><%= display_name(note["pubkey"]) %></span>
+      <span class="tl-item__time"><%= rel_time(note["created_at"]) %></span>
+    </span>
+    <span class="tl-item__body"><%= note_content(note["content"]) %></span>
+  </a>
+</article>

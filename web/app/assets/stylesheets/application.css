@@ -1,12 +1,11 @@
 /*
- * birdwatch — Material 3 Expressive (Mono scheme)
+ * birdwatch — Material 3 Expressive (Mono scheme), Twitter-style timeline
  *
  * Color roles: exact values from the brief (light + dark, high-contrast mono).
- * Shape: small radii across the scale (buttons 8–12, cards/settings 8,
- * dialogs 12, FAB 16); the feed boxes keep their sketched 28dp top/bottom
- * radius; the nav indicator is the one deliberate pill (64×32).
+ * Shape: small radii across the scale (buttons 8–12, dialogs 12, FAB 16);
+ * the timeline is boxless rows with hairline dividers, avatars round.
  * Type: Roboto Serif everywhere, emphasized (heavy) weights for headings,
- * button labels and tabs per M3 Expressive.
+ * button labels and tabs per M3 Expressive; compact mobile sizes.
  * Motion: expressive spring (linear() curve below) for view transitions,
  * live insertions and press feedback.
  */
@@ -97,7 +96,6 @@
   --radius-sm: 8px;
   --radius-md: 12px;
   --radius-card: 8px;
-  --radius-feed: 28px;
   --radius-fab: 16px;
   --pad-screen: 16px;
   --appbar-h: 64px;
@@ -263,7 +261,7 @@ md-fab {
 
 .app-bar__title {
   flex: 1;
-  font-size: 22px;   /* titleLarge */
+  font-size: 20px;   /* titleLarge */
   font-weight: 700;  /* emphasized */
   letter-spacing: 0.15px;
   padding-left: 8px;
@@ -284,94 +282,93 @@ md-fab {
 }
 
 .page-title {
-  font-size: 28px;
+  font-size: 20px;
   font-weight: 700;
-  margin: 8px 0 16px;
+  margin: 4px 0 12px;
   line-height: 1.3;
 }
 
 .section-title {
-  font-size: 22px;
+  font-size: 16px;
   font-weight: 700;
-  margin: 24px 0 8px;
+  margin: 20px 0 8px;
   line-height: 1.3;
 }
 
 .section-title__count {
-  font-size: 16px;
+  font-size: 13px;
   font-weight: 400;
   color: var(--md-sys-color-on-surface-variant);
 }
 
 .page { display: block; }
 
-/* ------------------------------------------------------------- feed card */
+/* ------------------------------------------------------------- timeline */
 
-.feed {
+.feed { display: flex; flex-direction: column; }
+
+/* One timeline row: avatar link + main block (header row + body). No box —
+   rows are separated by hairline dividers, Twitter-style. */
+.tl-item {
   display: flex;
-  flex-direction: column;
-  gap: 16px;
+  gap: 10px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--md-sys-color-surface-container-highest);
 }
 
-.note-card {
-  background: var(--md-sys-color-surface);
-  border-radius: var(--radius-feed); /* 28dp top & bottom per sketch */
-  height: 220px;
-  overflow: hidden;
+.feed .tl-item:last-child { border-bottom: 0; }
+
+.tl-item__avatar { flex: 0 0 auto; }
+
+.tl-item__main {
+  flex: 1;
+  min-width: 0;
+  display: block;
+  text-decoration: none;
+  color: inherit;
+  transition: transform 0.3s var(--ease-spring);
+}
+
+.tl-item__main:active { transform: scale(0.99); }
+
+.tl-item__head {
   display: flex;
-  flex-direction: column;
-  padding: 12px 16px 16px;
-  position: relative;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
 }
 
-.note-card__head {
-  display: flex;           /* one row, never wraps */
-  flex-direction: row;
-  align-items: center;     /* vertically centered on the tallest item */
-  gap: 8px;
-  min-height: 48px;
-}
-
-.note-card__avatar { flex: 0 0 auto; margin: -4px 0; }
-
-.note-card__author {
-  font-size: 28px;
+.tl-item__name {
+  font-size: 15px;
   font-weight: 700;
   line-height: 1.3;
+  color: var(--md-sys-color-on-surface);
   min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  text-decoration: none;
-  color: var(--md-sys-color-on-surface);
 }
 
-.note-card__author--small { font-size: 22px; }
+.tl-item__name--sm { font-size: 14px; }
 
-.note-card__time {
-  flex: 1;                 /* stretches to the end of the row */
-  text-align: right;
-  font-size: 22px;
-  font-weight: 400;
+.tl-item__time {
+  flex: 0 0 auto;
+  font-size: 13px;
   color: var(--md-sys-color-on-surface-variant);
   line-height: 1.3;
+  white-space: nowrap;
 }
 
-/* note text: centered in the remaining space, no ripple/reaction */
-.note-card__text {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  font-size: 28px;
-  line-height: 1.35;
+.tl-item__time::before { content: "·"; margin-right: 5px; }
+
+.tl-item__body {
+  display: block;
+  margin-top: 2px;
+  font-size: 15px;
+  line-height: 1.45;
   color: var(--md-sys-color-on-surface);
-  text-decoration: none;
-  min-height: 0;
+  overflow-wrap: break-word;
 }
-
-.note-card__text > * { max-width: 100%; }
-.note-card__text--static { cursor: default; }
-.note-card__text--comment { font-size: 22px; }
 
 .note-url {
   color: var(--md-sys-color-inverse-primary);
@@ -380,33 +377,68 @@ md-fab {
   overflow-wrap: anywhere;
 }
 
-/* detail variant: content sized to fit, no fixed 220 box */
-.note-card--detail {
-  height: auto;
-  min-height: 220px;
-}
+/* detail: roomier body, no divider under the focused note */
+.tl-item--detail { border-bottom: 0; padding: 16px 0 8px; }
+.tl-item__body--detail { font-size: 17px; line-height: 1.5; margin-top: 6px; }
 
-.note-card--comment {
-  height: auto;
-  padding: 10px 14px 14px;
-}
+/* comments under the detail */
+.tl-item--comment { border-bottom: 0; padding: 10px 0; }
+.tl-item--comment .tl-item__body { font-size: 15px; }
 
 .comments {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  margin-top: 8px;
+  margin-top: 4px;
 }
 
-/* card entering live from SSE */
-.note-card--enter {
-  animation: card-in 0.45s var(--ease-spring) both;
+.comments .tl-item + .tl-item {
+  border-top: 1px solid var(--md-sys-color-surface-container-highest);
 }
 
-@keyframes card-in {
+/* avatars: kind-0 picture in a circle, account_circle fallback */
+.avatar {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--md-sys-color-surface-container-high);
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.avatar img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.avatar .avatar__fallback { display: none; }
+.avatar:not(:has(img)) .avatar__fallback,
+.avatar--fallback .avatar__fallback { display: inline-block; }
+.avatar--fallback img { display: none; }
+
+.avatar--sm { width: 36px; height: 36px; }
+.avatar--sm .avatar__fallback { font-size: 32px; }
+.avatar--md { width: 40px; height: 40px; }
+.avatar--md .avatar__fallback { font-size: 36px; }
+.avatar--lg { width: 44px; height: 44px; }
+.avatar--lg .avatar__fallback { font-size: 40px; }
+.avatar--xl { width: 64px; height: 64px; }
+.avatar--xl .avatar__fallback { font-size: 56px; }
+
+/* row entering live from SSE */
+.tl-item--enter {
+  animation: tl-in 0.45s var(--ease-spring) both;
+}
+
+@keyframes tl-in {
   from {
     opacity: 0;
-    transform: translateY(-16px) scale(0.97);
+    transform: translateY(-12px);
   }
 }
 
@@ -418,7 +450,7 @@ md-fab {
   display: flex;
   align-items: center;
   gap: 4px;
-  min-height: 48px;
+  min-height: 40px;
 }
 
 .note-actions__form { display: inline-flex; }
@@ -431,7 +463,7 @@ md-fab {
 }
 
 .note-actions__count {
-  font-size: 16px;
+  font-size: 13px;
   color: var(--md-sys-color-on-surface-variant);
   margin-right: 8px;
 }
@@ -587,7 +619,7 @@ md-fab {
 }
 
 .profile-row__name {
-  font-size: 18px;
+  font-size: 15px;
   font-weight: 700;
   line-height: 1.3;
   white-space: nowrap;
@@ -690,19 +722,17 @@ md-fab {
   padding: 16px;
 }
 
-.profile-header__avatar { font-size: 56px; color: var(--md-sys-color-on-surface-variant); }
-
 .profile-header__body { min-width: 0; flex: 1; }
 
 .profile-header__name {
-  font-size: 28px;
+  font-size: 20px;
   font-weight: 700;
   line-height: 1.3;
   overflow-wrap: anywhere;
 }
 
 .profile-header__sub {
-  font-size: 14px;
+  font-size: 13px;
   color: var(--md-sys-color-on-surface-variant);
 }
 
@@ -747,7 +777,7 @@ md-fab {
 }
 
 .settings-card__title {
-  font-size: 22px;
+  font-size: 16px;
   font-weight: 700;
   margin: 0 0 12px;
 }
@@ -807,17 +837,17 @@ md-fab {
 .empty-state--page { padding-top: 72px; }
 .empty-state--compact { padding: 24px; }
 
-.empty-state__icon { font-size: 48px; opacity: 0.7; }
+.empty-state__icon { font-size: 40px; opacity: 0.7; }
 
 .empty-state__title {
-  font-size: 22px;
+  font-size: 16px;
   font-weight: 700;
   color: var(--md-sys-color-on-surface);
   margin: 12px 0 4px;
 }
 
 .empty-state__body {
-  font-size: 14px;
+  font-size: 13px;
   line-height: 1.5;
   margin: 0 0 16px;
 }
@@ -928,7 +958,7 @@ html:active-view-transition-type(back)::view-transition-new(root) {
 @media (prefers-reduced-motion: reduce) {
   ::view-transition-old(root),
   ::view-transition-new(root),
-  .note-card--enter {
+  .tl-item--enter {
     animation: none !important;
   }
 }

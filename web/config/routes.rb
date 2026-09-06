@@ -12,7 +12,7 @@ Rails.application.routes.draw do
   get  "favorites", to: "favorites#show"
 
   # Notes + comments + reactions
-  get  "notes/:id/card", to: "notes#card", as: :note_card
+  get  "notes/:id/item", to: "notes#item", as: :note_item
   get  "notes/:id/section", to: "notes#section", as: :note_section
   get  "notes/:id", to: "notes#show", as: :note
   post "notes", to: "notes#create"

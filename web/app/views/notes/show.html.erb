@@ -1,15 +1,17 @@
 <% content_for :title, "投稿" %>
 <div class="detail" data-controller="live" data-live-thread-value="<%= @note["id"] %>">
   <% if @note %>
-    <article class="note-card note-card--detail" data-note-id="<%= @note["id"] %>" data-pubkey="<%= @note["pubkey"] %>">
-      <div class="note-card__head">
-        <md-icon-button class="note-card__avatar" href="<%= profile_path(@note["pubkey"]) %>" aria-label="プロフィール">
-          <span class="msr msr--outline">account_circle</span>
-        </md-icon-button>
-        <span class="note-card__author" data-profile-name><%= display_name(@note["pubkey"]) %></span>
-        <span class="note-card__time"><%= rel_time(@note["created_at"]) %></span>
+    <article class="tl-item tl-item--detail" data-note-id="<%= @note["id"] %>" data-pubkey="<%= @note["pubkey"] %>">
+      <a class="tl-item__avatar" href="<%= profile_path(@note["pubkey"]) %>" aria-label="プロフィール">
+        <%= avatar_tag(@note["pubkey"], klass: "avatar--lg") %>
+      </a>
+      <div class="tl-item__main">
+        <span class="tl-item__head">
+          <span class="tl-item__name" data-profile-name><%= display_name(@note["pubkey"]) %></span>
+          <span class="tl-item__time"><%= rel_time(@note["created_at"]) %></span>
+        </span>
+        <span class="tl-item__body tl-item__body--detail"><%= note_content(@note["content"]) %></span>
       </div>
-      <div class="note-card__text note-card__text--static"><%= note_content(@note["content"]) %></div>
     </article>
 
     <%= render "notes/thread_section" %>
