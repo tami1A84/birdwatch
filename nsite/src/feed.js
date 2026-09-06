@@ -12,6 +12,11 @@ export const DEFAULT_READ_RELAYS = [
   'wss://r.kojira.io',
 ]
 
+// NIP-50 search-capable relays — the general-purpose relays above REJECT the
+// `search` filter item ("bad req: unrecognised filter item", verified on
+// damus/nos.lol/kojira 2026-09-06), so search queries get their own pool.
+export const SEARCH_RELAYS = ['wss://nostr.wine']
+
 export function npub(pk) {
   try { return nip19.npubEncode(pk) } catch { return pk }
 }
@@ -26,11 +31,13 @@ export async function fetchContacts(relays, userPk) {
     .filter((pk) => !seen.has(pk) && seen.add(pk))
 }
 
-export async function fetchTimeline(relays, userPk, contacts) {
-  const authors = [...new Set([...contacts, userPk])].slice(0, 400)
-  const notes = await relays.query({
-    kinds: [1], authors, limit: 100, since: Math.floor(Date.now() / 1000) - 48 * 3600,
-  })
+export async function fetchTimeline(relays, authors) {
+  const filter = {
+    kinds: [1], limit: 100, since: Math.floor(Date.now() / 1000) - 48 * 3600,
+  }
+  // authors == null -> browse mode (no contact list available): global notes
+  if (authors?.length) filter.authors = [...new Set(authors)].slice(0, 400)
+  const notes = await relays.query(filter)
   const unique = new Map()
   for (const ev of notes.sort((a, b) => b.created_at - a.created_at)) {
     if (!unique.has(ev.id)) unique.set(ev.id, ev)

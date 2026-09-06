@@ -42,6 +42,18 @@ export class BunkerClient {
 
   // sk: Uint8Array ephemeral secret key (persisted by the caller).
   async connect(uri, sk, onStatus = () => {}) {
+    try {
+      return await this._connect(uri, sk, onStatus)
+    } catch (e) {
+      // No half-connected state: a failed handshake must leave the client
+      // actually disconnected (and must not leak the inbox subscription).
+      this.close()
+      throw e
+    }
+  }
+
+  async _connect(uri, sk, onStatus = () => {}) {
+    this.close()
     const parsed = parseBunkerUri(uri)
     this.sk = sk
     this.pk = getPublicKey(sk)

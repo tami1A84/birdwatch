@@ -19,7 +19,7 @@ import jsQR from "jsqr";
 import { RelaySet } from './relay-set.js'
 import { generateSecretKey } from 'nostr-tools'
 import { BunkerClient, parseBunkerUri } from './nip46.js'
-import { DEFAULT_READ_RELAYS, fetchContacts, fetchTimeline, fetchProfiles,
+import { DEFAULT_READ_RELAYS, SEARCH_RELAYS, fetchContacts, fetchTimeline, fetchProfiles,
          renderContent, timeLabel, npub } from './feed.js'
 
 const SK_KEY = 'bw_ephem_sk'
@@ -27,12 +27,19 @@ const URI_KEY = 'bw_bunker_uri'
 
 const $ = (id) => document.getElementById(id)
 const relays = new RelaySet(DEFAULT_READ_RELAYS)
+const searchRelays = new RelaySet(SEARCH_RELAYS)
 const bunker = new BunkerClient(relays)
 
 let userPk = null
 let contacts = []
 let profiles = new Map()
 let readRelays = [...DEFAULT_READ_RELAYS]
+
+// feed state: interleaving guard, live subscription, dedupe
+let feedRun = 0
+let lastFeedLoadAt = 0
+let seenIds = new Set()
+let feedSub = null
 
 // ----- toast (same pattern as the Rails app) -------------------------------
 
@@ -109,19 +116,19 @@ function disconnect() {
 
 // ----- home timeline -------------------------------------------------------
 
-function emptyState(title, body) {
+function emptyState(title, body, icon = 'forum') {
   const el = document.createElement('div')
   el.className = 'empty-state'
-  const icon = document.createElement('span')
-  icon.className = 'msr empty-state__icon'
-  icon.textContent = 'forum'
+  const ic = document.createElement('span')
+  ic.className = 'msr empty-state__icon'
+  ic.textContent = icon
   const t = document.createElement('p')
   t.className = 'empty-state__title'
   t.textContent = title
   const b = document.createElement('p')
   b.className = 'empty-state__body'
   b.textContent = body
-  el.append(icon, t, b)
+  el.append(ic, t, b)
   return el
 }
 
@@ -165,25 +172,65 @@ function noteCard(ev) {
 }
 
 async function loadFeed() {
+  const run = ++feedRun
   const list = $('feed')
   list.innerHTML = ''
   list.appendChild(emptyState('読み込み中…', 'リレーからタイムラインを取得しています。'))
+  lastFeedLoadAt = Date.now()
   try {
-    if (userPk) contacts = await fetchContacts(relays, userPk)
-    const notes = await fetchTimeline(relays, userPk, contacts)
+    // ページ復帰直後のSafariでは REQ を送っても届かない — 1本でも開くのを待つ
+    await relays.ready(6000)
+    if (run !== feedRun) return
+    let notes
+    if (userPk) {
+      contacts = await fetchContacts(relays, userPk)
+      notes = await fetchTimeline(relays, [...contacts, userPk])
+    } else {
+      // 未接続(閲覧のみ): フォロー一覧が取れないので全体の最近の投稿を表示
+      notes = await fetchTimeline(relays, null)
+    }
+    if (run !== feedRun) return
     profiles = await fetchProfiles(relays,
       [...new Set(notes.map((n) => n.pubkey))])
+    if (run !== feedRun) return
     list.innerHTML = ''
     if (!notes.length) {
+      const alive = [...relays.sockets.values()].some((ws) => ws.readyState === 1)
+      if (!alive) throw new Error('リレーに接続できません')
       list.appendChild(emptyState('まだ投稿がありません',
         'フォローしたアカウントの投稿や、自分の投稿がここに表示されます。'))
+      startLiveFeed()
       return
     }
+    seenIds = new Set(notes.map((n) => n.id))
     for (const ev of notes.slice(0, 60)) list.appendChild(noteCard(ev))
+    startLiveFeed()
   } catch (e) {
+    if (run !== feedRun) return
     list.innerHTML = ''
-    list.appendChild(emptyState('読み込みに失敗しました', e.message))
+    const es = emptyState('読み込みに失敗しました', e.message)
+    const retry = document.createElement('md-outlined-button')
+    retry.textContent = '再試行'
+    retry.addEventListener('click', loadFeed)
+    es.appendChild(retry)
+    list.appendChild(es)
   }
+}
+
+// 新着を購読して先頭に差し込む(Rails版のSSE相当)。再接続のたびに REQ が
+// 再発行されるのは RelaySet 側。再接続後の再送イベントは id で重複排除。
+function startLiveFeed() {
+  feedSub?.close()
+  const filter = { kinds: [1], since: Math.floor(Date.now() / 1000) }
+  if (userPk) filter.authors = [...new Set([...contacts, userPk])].slice(0, 400)
+  feedSub = relays.subscribe(filter, (ev) => {
+    if (seenIds.has(ev.id)) return
+    seenIds.add(ev.id)
+    const list = $('feed')
+    list.querySelector('.empty-state')?.remove()
+    list.prepend(noteCard(ev))
+    while (list.children.length > 80) list.lastElementChild.remove()
+  })
 }
 
 // ----- compose dialog ------------------------------------------------------
@@ -209,12 +256,99 @@ async function submitCompose() {
     if (!res.ok) throw new Error('リレーが受け付けませんでした')
     $('compose-text').value = ''
     $('compose-dialog').close()
+    seenIds.add(signed.id) // ライブ購読のエコーで二重表示にならないように
     $('feed').prepend(noteCard(signed))
     toast('投稿しました')
   } catch (e) {
     toast(`投稿に失敗しました: ${e.message}`)
   } finally {
     btn.disabled = false
+  }
+}
+
+// ----- search (NIP-50 relay search, narrowed client-side) -------------------
+
+function profileRow(pk, p) {
+  const row = document.createElement('div')
+  row.className = 'profile-row'
+  const av = document.createElement('span')
+  av.className = 'avatar avatar--sm'
+  const img = document.createElement('img')
+  img.alt = ''
+  img.loading = 'lazy'
+  if (p.picture) {
+    img.src = p.picture
+    img.onerror = () => { img.style.visibility = 'hidden' }
+  } else {
+    img.style.visibility = 'hidden'
+  }
+  av.appendChild(img)
+  const body = document.createElement('span')
+  body.className = 'profile-row__body'
+  const name = document.createElement('span')
+  name.className = 'profile-row__name'
+  name.textContent = p.display_name || p.name || `${pk.slice(0, 8)}…`
+  const sub = document.createElement('span')
+  sub.className = 'profile-row__sub'
+  sub.textContent = p.nip05 || `${npub(pk).slice(0, 20)}…`
+  body.append(name, sub)
+  row.append(av, body)
+  return row
+}
+
+function searchSection(title, nodes) {
+  const sec = document.createElement('div')
+  const h = document.createElement('h2')
+  h.className = 'section-title'
+  h.textContent = title
+  sec.appendChild(h)
+  for (const n of nodes) sec.appendChild(n)
+  return sec
+}
+
+async function runSearch(q) {
+  const box = $('search-results')
+  if (!q) return
+  box.innerHTML = ''
+  box.appendChild(emptyState('検索中…', 'リレーに問い合わせています。', 'search'))
+  searchRelays.open()
+  await searchRelays.ready(4000)
+  const [noteHits, profileHits] = await Promise.all([
+    searchRelays.query({ kinds: [1], search: q, limit: 50 }, 10000),
+    searchRelays.query({ kinds: [0], search: q, limit: 20 }, 10000),
+  ])
+  // NIP-50 非対応リレーは search を無視して雑多な最近のイベントを返すことが
+  // あるので、内容側でも再度絞り込む(二重でも安全側に倒す)。
+  const ql = q.toLowerCase()
+  const matches = (s) => String(s || '').toLowerCase().includes(ql)
+  const notes = noteHits
+    .filter((ev) => matches(ev.content))
+    .sort((a, b) => b.created_at - a.created_at)
+  const profs = []
+  for (const ev of profileHits.sort((a, b) => b.created_at - a.created_at)) {
+    let meta = {}
+    try { meta = JSON.parse(ev.content) } catch { /* keep empty */ }
+    profiles.set(ev.pubkey, meta) // 検索で得たプロフィールはフィード側でも使う
+    if (matches(meta.name) || matches(meta.display_name) ||
+        matches(meta.nip05) || matches(meta.about)) {
+      if (!profs.some((x) => x.pk === ev.pubkey)) profs.push({ pk: ev.pubkey, meta })
+    }
+  }
+  box.innerHTML = ''
+  if (!profs.length && !notes.length) {
+    box.appendChild(emptyState(`「${q}」に一致するものがありません`,
+      '別のキーワードで試してください。', 'search_off'))
+    return
+  }
+  if (profs.length) {
+    box.appendChild(searchSection('プロフィール',
+      profs.slice(0, 10).map((x) => profileRow(x.pk, x.meta))))
+  }
+  if (notes.length) {
+    const feed = document.createElement('div')
+    feed.className = 'feed feed--search'
+    for (const ev of notes.slice(0, 30)) feed.appendChild(noteCard(ev))
+    box.appendChild(searchSection('投稿', [feed]))
   }
 }
 
@@ -297,6 +431,8 @@ async function startQr() {
 
 // ----- wiring ---------------------------------------------------------------
 
+const on = (id, ev, fn) => $(id)?.addEventListener(ev, fn)
+
 $('navbar').addEventListener('navigation-bar-activated', (e) => {
   const tab = e.detail?.tab
   if (!tab) return
@@ -320,14 +456,39 @@ $('qr-cancel').addEventListener('click', () => {
 })
 $('qr-dialog').addEventListener('close', stopQr)
 
+on('btn-search', 'click', () => {
+  $('search-dialog').show()
+  requestAnimationFrame(() => $('search-input').focus())
+})
+on('search-close', 'click', () => $('search-dialog').close())
+on('search-form', 'submit', (e) => {
+  e.preventDefault()
+  runSearch($('search-input').value.trim())
+})
+
 if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
   navigator.serviceWorker.register('./sw.js').catch(() => {})
 }
 
+// Safari はバックグラウンド中にソケットを静かに殺す。復帰したら張り直し、
+// 前回のフィード取得から2分以上経過していればタイムラインも取り直す。
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible') return
+  relays.revive()
+  if (Date.now() - lastFeedLoadAt > 2 * 60 * 1000) loadFeed()
+})
+
 // Home first; the feed reads work with or without the bunker.
 showView(0)
 ;(async () => {
+  // 全体フィードを先に出し(未接続でも読める)、接続が決まったらフォロイーの
+  // タイムラインを取り直す。旧実装は接続待ちとフィード取得が競合し、userPk が
+  // 決まる前に authors:[null] の REQ を飛ばすため、起動直後は常に空表示だった。
+  // さらに default リレーの open() が一度も呼ばれていなかった(bunker接続時の
+  // addUrls でのみソケットが張られる)ので、未接続だと REQ がどこにも届かなかった。
+  relays.open()
   loadFeed()
   const ok = await connectStored()
   if (!ok) renderBunkerState('未接続(閲覧のみ)')
+  else loadFeed()
 })()
