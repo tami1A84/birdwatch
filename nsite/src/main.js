@@ -24,6 +24,7 @@ import { DEFAULT_READ_RELAYS, SEARCH_RELAYS, fetchContacts, fetchTimeline, fetch
 
 const SK_KEY = 'bw_ephem_sk'
 const URI_KEY = 'bw_bunker_uri'
+const PK_KEY = 'bw_user_pk'
 
 const $ = (id) => document.getElementById(id)
 const relays = new RelaySet(DEFAULT_READ_RELAYS)
@@ -40,6 +41,12 @@ let feedRun = 0
 let lastFeedLoadAt = 0
 let seenIds = new Set()
 let feedSub = null
+// 起動制御: whenConnected は起動時のbunker接続の完了(loadFeed が短く待てる
+// ように)。lastFeedMode/lastFeedPk は最後の loadFeed が何を表示したか —
+// 接続後に取り直しが本当に必要かの判定に使う。
+let whenConnected = null
+let lastFeedMode = null
+let lastFeedPk = null
 
 // ----- toast (same pattern as the Rails app) -------------------------------
 
@@ -82,6 +89,9 @@ async function connectStored(onDone = () => {}) {
     readRelays = [...new Set([...parsed.relays, ...DEFAULT_READ_RELAYS])]
     userPk = await bunker.connect(uri, ephemeralKey(),
       (text) => renderBunkerState(text))
+    // フォロー一覧(kind 3)は公開イベントなので、次回起動はこの鍵で bunker
+    // 待ちなしにフォロイーのタイムラインを直接取りに行ける。
+    localStorage.setItem(PK_KEY, userPk)
     renderBunkerState('接続済み', true)
     $('acct-pk').textContent = `${npub(userPk).slice(0, 16)}…`
     $('bunker-uri').value = uri
@@ -106,6 +116,7 @@ async function connectNew() {
 function disconnect() {
   bunker.close()
   localStorage.removeItem(URI_KEY)
+  localStorage.removeItem(PK_KEY)
   $('bunker-uri').value = ''
   userPk = null
   $('acct-pk').textContent = '—'
@@ -181,12 +192,25 @@ async function loadFeed() {
     // ページ復帰直後のSafariでは REQ を送っても届かない — 1本でも開くのを待つ
     await relays.ready(6000)
     if (run !== feedRun) return
+    // 起動直後でbunker接続がまだ決まっていないなら短く待つ(フォロイーの
+    // タイムラインを最初から出すため)。8秒で諦めたら全体表示に落ちる。
+    if (!userPk && whenConnected) {
+      await Promise.race([
+        whenConnected,
+        new Promise((r) => setTimeout(r, 8000)),
+      ])
+      if (run !== feedRun) return
+    }
     let notes
     if (userPk) {
+      lastFeedMode = 'following'
+      lastFeedPk = userPk
       contacts = await fetchContacts(relays, userPk)
       notes = await fetchTimeline(relays, [...contacts, userPk])
     } else {
       // 未接続(閲覧のみ): フォロー一覧が取れないので全体の最近の投稿を表示
+      lastFeedMode = 'global'
+      lastFeedPk = null
       notes = await fetchTimeline(relays, null)
     }
     if (run !== feedRun) return
@@ -200,13 +224,14 @@ async function loadFeed() {
       list.appendChild(emptyState('まだ投稿がありません',
         'フォローしたアカウントの投稿や、自分の投稿がここに表示されます。'))
       startLiveFeed()
-      return
+      return lastFeedMode
     }
     seenIds = new Set(notes.map((n) => n.id))
     for (const ev of notes.slice(0, 60)) list.appendChild(noteCard(ev))
     startLiveFeed()
+    return lastFeedMode
   } catch (e) {
-    if (run !== feedRun) return
+    if (run !== feedRun) return lastFeedMode
     list.innerHTML = ''
     const es = emptyState('読み込みに失敗しました', e.message)
     const retry = document.createElement('md-outlined-button')
@@ -214,6 +239,7 @@ async function loadFeed() {
     retry.addEventListener('click', loadFeed)
     es.appendChild(retry)
     list.appendChild(es)
+    return lastFeedMode
   }
 }
 
@@ -352,6 +378,47 @@ async function runSearch(q) {
   }
 }
 
+// ----- PWA install guidance ------------------------------------------------
+// iOS Safari はネイティブのインストール促導を出さない仕様(「ホーム画面に
+// 追加」は共有メニューから行う)。そこでiOSには手順を案内するバナーを出し、
+// Android/Chrome では beforeinstallprompt を拾ってネイティブダイアログを出す。
+// スタンドアロンで起動されている時(=もうインストール済み)は何も出さない。
+
+function setupInstallHint() {
+  const banner = $('install-banner')
+  if (!banner) return
+  const standalone = matchMedia('(display-mode: standalone)').matches ||
+    navigator.standalone === true
+  if (standalone || localStorage.getItem('bw_install_dismissed') === '1') return
+  const ios = /iPhone|iPad|iPod/i.test(navigator.userAgent)
+  const textEl = banner.querySelector('.install-banner__text')
+  const btn = $('install-button')
+  let deferred = null
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault()
+    deferred = e
+    if (ios || banner.hidden === false) return
+    textEl.textContent = 'ホーム画面に追加してアプリとして使えます。'
+    btn.style.display = ''
+    banner.hidden = false
+  })
+  if (ios) {
+    textEl.textContent = 'ホーム画面に追加: Safari下部の共有ボタン →「ホーム画面に追加」'
+    banner.hidden = false
+  }
+  btn.addEventListener('click', async () => {
+    if (!deferred) return
+    deferred.prompt()
+    try { await deferred.userChoice } catch { /* 閉じられただけ */ }
+    deferred = null
+    banner.hidden = true
+  })
+  $('install-close').addEventListener('click', () => {
+    banner.hidden = true
+    localStorage.setItem('bw_install_dismissed', '1')
+  })
+}
+
 // ----- navigation ----------------------------------------------------------
 
 const VIEWS = [
@@ -466,6 +533,8 @@ on('search-form', 'submit', (e) => {
   runSearch($('search-input').value.trim())
 })
 
+setupInstallHint()
+
 if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
   navigator.serviceWorker.register('./sw.js').catch(() => {})
 }
@@ -481,14 +550,25 @@ document.addEventListener('visibilitychange', () => {
 // Home first; the feed reads work with or without the bunker.
 showView(0)
 ;(async () => {
-  // 全体フィードを先に出し(未接続でも読める)、接続が決まったらフォロイーの
-  // タイムラインを取り直す。旧実装は接続待ちとフィード取得が競合し、userPk が
-  // 決まる前に authors:[null] の REQ を飛ばすため、起動直後は常に空表示だった。
-  // さらに default リレーの open() が一度も呼ばれていなかった(bunker接続時の
-  // addUrls でのみソケットが張られる)ので、未接続だと REQ がどこにも届かなかった。
+  // フォロー一覧(kind 3)は公開イベントなので、前回接続時にキャッシュした
+  // 公開鍵があればbunkerの接続を待たずにフォロイーのタイムラインを直接取りに
+  // 行く。旧実装は「全体フィードを先に表示 → 接続後に再読込」の二段描画で、
+  // 起動のたびにリロードが見えていた(2026-09-06 N指摘)。全体表示は接続も
+  // 鍵キャッシュも無い初回訪問時のフォールバックに格下げ。
   relays.open()
-  loadFeed()
-  const ok = await connectStored()
-  if (!ok) renderBunkerState('未接続(閲覧のみ)')
-  else loadFeed()
+  const cachedPk = localStorage.getItem(PK_KEY)
+  if (cachedPk) {
+    userPk = cachedPk
+    try {
+      const uri = localStorage.getItem(URI_KEY)
+      if (uri) relays.addUrls(parseBunkerUri(uri).relays)
+    } catch { /* URIが壊れていてもデフォルトリレーで読める */ }
+  }
+  whenConnected = connectStored()
+  const firstMode = await loadFeed()
+  const ok = await whenConnected
+  // 8秒以内に接続が決まっていれば loadFeed は既にフォロイーを出しているので
+  // 何もしない。全体表示のまま残った場合(接続の遅延/失敗)と、接続で公開鍵が
+  // 入れ替わった場合だけ、ここでフォロイーに差し替える。
+  if (ok && (firstMode !== 'following' || lastFeedPk !== userPk)) loadFeed()
 })()

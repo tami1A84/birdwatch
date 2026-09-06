@@ -7,6 +7,9 @@
   <meta name="theme-color" media="(prefers-color-scheme: light)" content="#FAF8FE">
   <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#141317">
   <title>birdwatch</title>
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="birdwatch">
   <link rel="manifest" href="./manifest.webmanifest">
   <link rel="icon" href="./favicon.ico" sizes="16x16 32x32 48x48">
   <link rel="apple-touch-icon" href="./icon-192.png">
@@ -17,19 +20,42 @@
     .settings-form__buttons { display: flex; gap: 8px; flex-wrap: wrap; }
 
     /* 2026-09-06 N feedback:
-       - bottom nav was eating the timeline (80px Material default + iOS safe
-         area): slim the container to 64px and make content/FAB/toast offsets
-         track it. --navbar-h is the app's own var; the component token is the
-         real --md-navigation-bar-container-height (style.css sets an
-         --md-navigation-bar-height token that the component never reads).
-       - round the app icon corners more than the shared 8px. */
+       - bottom nav was eating the timeline (80px Material default): slim the
+         container to 64px and make content/FAB/toast offsets track it.
+         --navbar-h is the app's own var; the component token is the real
+         --md-navigation-bar-container-height (style.css sets an
+         --md-navigation-bar-height token the component never reads).
+       - round the app icon corners more than the shared 8px.
+       2026-09-06 N feedback round 2:
+       - home-bar breathing room is unwanted in the PWA: zero the nav-bar's
+         env(safe-area-inset-bottom) (style.css keeps it for the Rails app)
+         and drop the env term from the content/FAB/toast offsets too. The
+         gesture pill just overlays the bottom edge like a native app. */
     :root { --navbar-h: 64px; }
     .nav-bar md-navigation-bar { --md-navigation-bar-container-height: 64px; }
-    .content { padding-bottom: calc(var(--navbar-h) + env(safe-area-inset-bottom, 0px) + 16px); }
-    .compose-fab { bottom: calc(var(--navbar-h) + env(safe-area-inset-bottom, 0px) + 16px); }
-    .toast { bottom: calc(var(--navbar-h) + env(safe-area-inset-bottom, 0px) + 16px); }
+    .nav-bar { padding-bottom: 0; }
+    .content { padding-bottom: calc(var(--navbar-h) + 16px); }
+    .compose-fab { bottom: calc(var(--navbar-h) + 16px); }
+    .toast { bottom: calc(var(--navbar-h) + 16px); }
     .app-bar__logo { border-radius: 10px; }
     .app-bar__brand { border-radius: 11px; }
+
+    /* install hint banner (iOS never shows a native one) */
+    .install-banner {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin: 0 0 12px;
+      padding: 10px 12px;
+      border-radius: var(--radius-md);
+      background: var(--md-sys-color-surface-container);
+      color: var(--md-sys-color-on-surface);
+      font-size: 13.5px;
+      line-height: 1.45;
+    }
+    .install-banner > .msr { font-size: 20px; color: var(--md-sys-color-primary); flex-shrink: 0; }
+    .install-banner__text { flex: 1; min-width: 0; }
+    .install-banner md-filled-button { --md-filled-button-container-height: 36px; flex-shrink: 0; }
 
     /* search dialog */
     #search-results { max-height: 48vh; overflow-y: auto; }
@@ -50,6 +76,14 @@
 
   <main class="content">
     <section id="view-home" hidden>
+      <div id="install-banner" class="install-banner" hidden>
+        <span class="msr">add_to_home_screen</span>
+        <span class="install-banner__text">ホーム画面に追加できます</span>
+        <md-filled-button id="install-button" style="display:none">インストール</md-filled-button>
+        <md-icon-button id="install-close" aria-label="閉じる">
+          <span class="msr">close</span>
+        </md-icon-button>
+      </div>
       <div class="feed" id="feed"></div>
     </section>
 
