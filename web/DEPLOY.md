@@ -20,6 +20,19 @@ NOSTRD_SOCKET=$XDG_RUNTIME_DIR/nostrd.sock \
 bin/rails server -b 127.0.0.1 -p 3000
 ```
 
+Runbook note (agent sessions): launch it as a systemd --user unit so it
+survives the session that started it — plain background jobs get reaped.
+
+```sh
+XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR systemd-run --user --unit=birdwatch-web \
+  --setenv=SECRET_KEY_BASE=<key> --setenv=RAILS_ENV=production \
+  --setenv=NOSTRD_SOCKET=$XDG_RUNTIME_DIR/nostrd.sock \
+  --working-directory=$PWD/web \
+  ruby bin/rails server -b 127.0.0.1 -p 3000
+# stop / status:
+XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR systemctl --user stop birdwatch-web.service
+```
+
 - `NOSTRD_SOCKET` overrides the socket path (default mirrors the daemon:
   `$XDG_RUNTIME_DIR/nostrd.sock`).
 - `NOSTRD_HISTORY` overrides the timeline replay size (default 300).
