@@ -19,24 +19,16 @@
     .qr-video { width: 100%; max-height: 60vh; border-radius: var(--radius-md); background: #000; }
     .settings-form__buttons { display: flex; gap: 8px; flex-wrap: wrap; }
 
-    /* 2026-09-06 N feedback:
-       - bottom nav was eating the timeline (80px Material default): slim the
-         container to 64px and make content/FAB/toast offsets track it.
-         --navbar-h is the app's own var; the component token is the real
-         --md-navigation-bar-container-height (style.css sets an
-         --md-navigation-bar-height token the component never reads).
-       - round the app icon corners more than the shared 8px.
-       2026-09-06 N feedback round 2:
+    /* 2026-09-06 N feedback round 2:
        - home-bar breathing room is unwanted in the PWA: zero the nav-bar's
          env(safe-area-inset-bottom) (style.css keeps it for the Rails app)
          and drop the env term from the content/FAB/toast offsets too. The
-         gesture pill just overlays the bottom edge like a native app. */
-    :root { --navbar-h: 64px; }
-    .nav-bar md-navigation-bar { --md-navigation-bar-container-height: 64px; }
-    .nav-bar { padding-bottom: 0; }
-    .content { padding-bottom: calc(var(--navbar-h) + 16px); }
-    .compose-fab { bottom: calc(var(--navbar-h) + 16px); }
-    .toast { bottom: calc(var(--navbar-h) + 16px); }
+         gesture pill just overlays the bottom edge like a native app.
+       round 3:
+       - the bottom navigation bar is gone entirely — settings moved next to
+         search in the app bar, no home tab. Zeroing --navbar-h makes the
+         shared style.css content/FAB/toast offsets hug the bottom edge. */
+    :root { --navbar-h: 0px; }
     .app-bar__logo { border-radius: 10px; }
     .app-bar__brand { border-radius: 11px; }
 
@@ -76,6 +68,9 @@
     <div class="app-bar__title" id="appbar-title">birdwatch</div>
     <md-icon-button class="app-bar__button" id="btn-search" aria-label="検索">
       <span class="msr">search</span>
+    </md-icon-button>
+    <md-icon-button class="app-bar__button" id="btn-settings" aria-label="設定">
+      <span class="msr">settings</span>
     </md-icon-button>
   </header>
 
@@ -148,18 +143,6 @@
     </section>
   </main>
 
-  <nav class="nav-bar">
-    <md-navigation-bar id="navbar">
-      <md-navigation-tab label="ホーム">
-        <span class="msr" slot="active-icon">home</span>
-        <span class="msr" slot="inactive-icon">home</span>
-      </md-navigation-tab>
-      <md-navigation-tab label="設定">
-        <span class="msr" slot="active-icon">settings</span>
-        <span class="msr" slot="inactive-icon">settings</span>
-      </md-navigation-tab>
-    </md-navigation-bar>
-  </nav>
 
   <md-fab class="compose-fab" variant="primary" size="medium" id="compose-fab" aria-label="新規投稿">
     <span class="msr" slot="icon">add</span>

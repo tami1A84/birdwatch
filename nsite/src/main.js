@@ -1,8 +1,9 @@
 // birdwatch static app — browser-side wiring.
 //
 // Visual + interaction parity with the Rails web app (Material 3
-// Expressive): app-bar header, bottom navigation, compose FAB + dialog,
-// serif timeline rows. Reads: home timeline straight from relays (feed.js).
+// Expressive): app-bar header (search + settings toggle), compose FAB +
+// dialog, serif timeline rows. Reads: home timeline straight from relays
+// (feed.js).
 // Writes: NIP-46 via the user's daemon bunker (nip46.js) — the browser
 // never holds the identity key, only an ephemeral client key in
 // localStorage. Settings additionally pairs the bunker by scanning the
@@ -13,8 +14,6 @@ import "@material/web/button/text-button.js";
 import "@material/web/iconbutton/icon-button.js";
 import "@material/web/fab/fab.js";
 import "@material/web/dialog/dialog.js";
-import "@material/web/labs/navigationbar/navigation-bar.js";
-import "@material/web/labs/navigationtab/navigation-tab.js";
 import jsQR from "jsqr";
 import { RelaySet } from './relay-set.js'
 import { generateSecretKey } from 'nostr-tools'
@@ -420,16 +419,26 @@ function setupInstallHint() {
 }
 
 // ----- navigation ----------------------------------------------------------
+// No bottom nav (N, 2026-09-06 round 3): the app-bar settings button opens
+// settings and doubles as "back" while inside it; home is the only tab.
 
 const VIEWS = [
   { id: 'home', title: 'birdwatch' },
   { id: 'settings', title: '設定' },
 ]
 
+let currentView = 0
+
 function showView(i) {
+  currentView = i
   for (const [n, v] of VIEWS.entries()) $(`view-${v.id}`).hidden = n !== i
   $('appbar-title').textContent = VIEWS[i].title
   $('compose-fab').style.display = i === 0 ? '' : 'none' // md-fab ignores [hidden]
+  const settingsIcon = $('btn-settings')?.querySelector('.msr')
+  if (settingsIcon) {
+    settingsIcon.textContent = i === 0 ? 'settings' : 'arrow_back'
+    $('btn-settings').setAttribute('aria-label', i === 0 ? '設定' : '戻る')
+  }
 }
 
 // ----- QR camera scan (pair the bunker by reading the daemon's QR) ----------
@@ -500,11 +509,7 @@ async function startQr() {
 
 const on = (id, ev, fn) => $(id)?.addEventListener(ev, fn)
 
-$('navbar').addEventListener('navigation-bar-activated', (e) => {
-  const tab = e.detail?.tab
-  if (!tab) return
-  showView([...$('navbar').children].indexOf(tab))
-})
+on('btn-settings', 'click', () => showView(currentView === 0 ? 1 : 0))
 
 $('bunker-form').addEventListener('submit', (e) => {
   e.preventDefault()
