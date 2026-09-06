@@ -626,24 +626,24 @@ class TuiTest < Minitest::Test
     assert_equal "ロクヨウ", app.send(:settings_items)[1][:sub]
   end
 
-  # Settings tab: o builds a nostrconnect:// URI (relay + one-time secret +
-  # metadata) and opens a locally generated QR page — never a third-party
-  # QR service.
-  def test_open_on_settings_tab_opens_local_qr_page
+  # Settings tab: o on the "nostr connect" row asks the daemon for its
+  # persistent bunker URI (the daemon is the signer; the phone pairs as the
+  # client). The QR itself is a modal/broker page; here we assert the request
+  # goes out and the row-keyed routing picks the connect row only.
+  def test_open_on_settings_tab_requests_bunker_uri
     app = NostrTui::App.new(timeline: NostrTui::Timeline.new)
     app.instance_variable_set(:@tab, 3)
-    app.instance_variable_set(:@info, { "me" => "ab" * 16,
-                                        "relays" => [{ "url" => "wss://yabu.me" }] })
-    opened = []
-    app.define_singleton_method(:open_external) { |cmd| opened << cmd }
-    app.send(:open_link)
-    path = Shellwords.split(opened.first)[1]
-    page = File.read(path)
-    assert page.include?("nostrconnect://#{'ab' * 16}"), "URI must be in the page"
-    assert page.include?("relay=wss%3A%2F%2Fyabu.me")
-    assert page.include?("<svg"), "qrencode SVG must be embedded"
-    assert page.include?("secret="), "one-time secret must be present"
-    File.delete(path)
+    sent = []
+    client = Object.new
+    client.define_singleton_method(:bunker_secret) { sent << :bsec }
+    app.instance_variable_set(:@selected, 2) # "nostr connect" row
+    app.send(:settings_action, "o", client)
+    assert_equal [:bsec], sent
+
+    # offline: no client -> flash, no pending request left dangling
+    app.send(:settings_action, "o", nil)
+    assert_equal "daemon に接続できません", app.instance_variable_get(:@flash)
+    assert_equal false, app.instance_variable_get(:@connect_pending)
   end
 
   def test_profile_edit_sends_update_and_flashes
@@ -705,5 +705,55 @@ class TuiTest < Minitest::Test
     app.define_singleton_method(:profile_buffer) { '{oops' }
     app.send(:profile_edit, nil)
     assert_equal "invalid profile JSON — not saved", app.instance_variable_get(:@flash)
+  end
+
+  # --- NIP-46 connect QR -----------------------------------------------------
+
+  def test_qr_block_lines_are_square_half_blocks_with_quiet_zone
+    uri = "bunker://#{'ab' * 32}?relay=wss%3A%2F%2Fnos.lol&secret=#{'0' * 32}"
+    lines = NostrTui::App.qr_block_lines(uri)
+
+    assert lines.size >= 15 # minimum QR (21 modules) + 8 quiet -> 15 rows
+    widths = lines.map(&:length)
+    assert_equal 1, widths.uniq.size                 # every line the same width
+    assert_equal (widths.first + 1) / 2, lines.size  # cells == 2 module rows
+    assert lines.join.chars.all? { |c| "█▀▄ ".include?(c) }
+    assert_equal " " * widths.first, lines.first     # quiet zone stays blank
+    assert_equal " " * widths.first, lines.last
+  end
+
+  def test_drain_result_records_bunker_uri_and_fires_modal_when_live
+    app = NostrTui::App.new(timeline: NostrTui::Timeline.new)
+    app.drain({ "ev" => "result", "id" => "bsec_1", "data" => { "uri" => "bunker://abc" } })
+    assert_equal "bunker://abc", app.instance_variable_get(:@bunker_uri)
+    assert_equal false, app.instance_variable_get(:@connect_pending)
+
+    shown = []
+    app.define_singleton_method(:show_connect_modal) { shown << @bunker_uri }
+    app.instance_variable_set(:@screen_live, true)
+    app.drain({ "ev" => "result", "id" => "bsec_2", "data" => { "uri" => "bunker://def" } })
+    assert_equal ["bunker://def"], shown # modal opens once curses owns the screen
+  end
+
+  def test_drain_bsec_ack_failure_clears_pending_and_flashes
+    app = NostrTui::App.new(timeline: NostrTui::Timeline.new)
+    app.instance_variable_set(:@connect_pending, true)
+    app.drain({ "ev" => "ack", "id" => "bsec_1", "ok" => false, "error" => "bunker unavailable" })
+    assert_equal false, app.instance_variable_get(:@connect_pending)
+    assert_includes app.instance_variable_get(:@flash).to_s, "bunker unavailable"
+  end
+
+  def test_request_connect_qr_sends_op_and_handles_offline
+    app = NostrTui::App.new(timeline: NostrTui::Timeline.new)
+    sent = []
+    client = Object.new
+    client.define_singleton_method(:bunker_secret) { sent << :bsec }
+    app.send(:request_connect_qr, client)
+    assert_equal [:bsec], sent
+    assert app.instance_variable_get(:@connect_pending)
+
+    app.send(:request_connect_qr, nil)
+    assert_equal false, app.instance_variable_get(:@connect_pending)
+    assert_equal "daemon に接続できません", app.instance_variable_get(:@flash)
   end
 end

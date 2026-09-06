@@ -33,6 +33,7 @@ module NostrTui
     PANEL = 3
     ACCENT_PANEL = 4
     DIM_PANEL = 5
+    QR_PAIR = 6 # NIP-46 connect QR: black modules on white background
 
     def initialize(timeline:, renderer: Renderer.new, io: $stdout)
       @timeline = timeline
@@ -46,6 +47,9 @@ module NostrTui
       @selected_id = nil
       @first_visible = 0
       @expanded = nil
+      @modal = nil        # NIP-46 connect QR overlay (hash: uri/qr/width)
+      @connect_pending = false
+      @bunker_uri = nil
       @screen_live = false # run() flips this once curses owns a real screen
     end
 
@@ -65,7 +69,22 @@ module NostrTui
         # the daemon serves stored metadata with the list so names render
         # right after a restart instead of waiting for live kind-0 traffic.
         @timeline.apply_profiles(message["profiles"] || [])
-      when "eod", "ack" then true
+      when "eod", "ack"
+        # bunker_secret failures arrive as ack(ok:false) with the bsec_ id.
+        if message["ev"] == "ack" && !message["ok"] && message["id"].to_s.start_with?("bsec_")
+          @connect_pending = false
+          flash("bunker URI: #{message['error']}")
+        end
+        true
+      when "result"
+        # Daemon answered a request (currently only bunker_secret). The URI
+        # opens the connect QR modal; headless runs just record it.
+        if message["id"].to_s.start_with?("bsec_")
+          @connect_pending = false
+          @bunker_uri = message.dig("data", "uri").to_s
+          show_connect_modal if @screen_live
+        end
+        true
       when "error" then warn "daemon: #{message['code']}"
       end
       clamp_selection
@@ -133,6 +152,7 @@ module NostrTui
       Curses.init_pair(PANEL, -1, -1)
       Curses.init_pair(ACCENT_PANEL, cyan, -1)
       Curses.init_pair(DIM_PANEL, gray, -1)
+      Curses.init_pair(QR_PAIR, Curses::COLOR_BLACK, Curses::COLOR_WHITE)
       Curses.curs_set(0)
       Curses.noecho
       # Multibyte input (Japanese search): without a locale/encoding hint,
@@ -142,6 +162,13 @@ module NostrTui
 
       loop do
         drain_socket(client)
+        if @modal
+          paint_modal
+          Curses.getch # any key closes; ESC here must not quit the app
+          @modal = nil
+          @renderer.reset # next paint() redraws every row the QR covered
+          next
+        end
         paint
         raw = Curses.getch
         action = KEYMAP[translate(raw)] or next
@@ -494,7 +521,7 @@ module NostrTui
       row = list_items[@selected]
       case [key, row && row[:label]]
       when ["e", "profile"] then profile_edit(client)
-      when ["o", "nostr connect"] then open_connect_qr
+      when ["o", "nostr connect"] then request_connect_qr(client)
       when ["o", "birdwatch 0.1"] then open_external("xdg-open #{Shellwords.escape(GITHUB_URL)}")
       when ["s", "logout"] then signout(client)
       when ["u", "unlock"] then unlock_session(client)
@@ -538,29 +565,92 @@ module NostrTui
     # and open a locally generated QR page in the browser (qrencode — no
     # third-party QR service ever sees the URI). The pairing handler
     # (kind 24133) is future work; the QR is ready for a phone signer.
-    def open_connect_qr
-      me = @info && @info["me"]
-      return flash("nostr connect unavailable (no pubkey)") unless me
+    # --- NIP-46 connect (settings tab "nostr connect") -----------------------
+    #
+    # The daemon IS the remote signer, so the phone is the client: we show its
+    # persistent bunker URI (bunker://…?relay=…&secret=…) as a scannable QR.
+    # The URI comes from the daemon's bunker_secret op; the secret never
+    # rotates, so re-pairing after a daemon restart needs no new QR.
 
-      relay = Array(@info["relays"]).filter_map { |r| r["url"] if r.is_a?(Hash) }
-                                     .find { |u| u.start_with?("wss://") } || "wss://nos.lol"
-      require "securerandom"
-      uri = "nostrconnect://#{me}?relay=#{CGI.escape(relay)}" \
-            "&secret=#{SecureRandom.hex(8)}&metadata=#{CGI.escape(JSON.generate({ "name" => "birdwatch" }))}"
-      open_external("xdg-open #{Shellwords.escape(connect_qr_page(uri))}")
-      flash("nostr connect QR opened")
+    # Settings tab: ask the daemon for the bunker URI. The answer lands in
+    # drain("result") — async, so we only flash a hint here.
+    def request_connect_qr(client)
+      @connect_pending = true
+      ok = client&.bunker_secret
+      if ok
+        flash("bunker URI を取得中…") unless @modal
+      else
+        @connect_pending = false
+        flash("daemon に接続できません")
+      end
+    end
+
+    # bunker URI -> terminal QR lines. Pure and headless-testable: half-block
+    # pairs (two module rows per terminal row) with a 4-module quiet zone.
+    # Raises LoadError (rqrcode gem missing) or ArgumentError (payload too
+    # large for the level); callers fall back to the browser QR page.
+    def self.qr_block_lines(uri, level: :l)
+      require "rqrcode"
+      qr = RQRCode::QRCode.new(uri.to_s, level: level)
+      modules = qr.modules
+      q = 4
+      grid = Array.new(modules.size + 2 * q) { Array.new(modules.size + 2 * q, false) }
+      modules.each_with_index do |row, y|
+        row.each_with_index { |dark, x| grid[y + q][x + q] = dark }
+      end
+      grid.each_slice(2).map do |pair|
+        top, bottom = pair
+        top.each_index.map do |x|
+          t = top[x]
+          b = bottom ? bottom[x] : false
+          t && b ? "█" : t ? "▀" : b ? "▄" : " "
+        end.join
+      end
+    end
+
+    # Opens the modal when the QR fits the terminal; otherwise hands off to
+    # the browser QR page (qrencode) or a plain-text modal.
+    def show_connect_modal
+      uri = @bunker_uri.to_s
+      return flash("bunker URI を取得できませんでした") if uri.empty?
+
+      lines = begin
+        self.class.qr_block_lines(uri)
+      rescue LoadError, StandardError
+        nil
+      end
+      width = lines ? lines.map { |l| Renderer.dw(l) }.max : 0
+      if lines && width + 4 <= Curses.stdscr.maxx && lines.size + 7 <= Curses.lines
+        @modal = { uri: uri, qr: lines, width: width }
+      else
+        open_connect_page(uri)
+      end
+    end
+
+    # Fallback for tiny terminals / missing rqrcode gem: browser QR (system
+    # qrencode), or a text-only modal when even qrencode is unavailable.
+    def open_connect_page(uri)
+      require "tempfile"
+      svg = Tempfile.create(["birdwatch-bunker", ".svg"]) # 0600, unpredictable name
+      svg_path = svg.path
+      svg.close
+      rendered = system("qrencode -t SVG -l M -m 2 -o #{Shellwords.escape(svg_path)} #{Shellwords.escape(uri)}")
+      rendered &&= File.exist?(svg_path) && File.size(svg_path).positive?
+      if rendered
+        open_external("xdg-open #{Shellwords.escape(bunker_qr_page(uri, svg_path))}")
+        flash("QRをブラウザで開きました(端末が小さいかrqrcodeが無いため)")
+      else
+        @modal = { uri: uri, qr: nil, width: [uri.length + 8, 60].min }
+        flash("rqrcodeが無いためURI表示のみ — gem install rqrcode 推奨")
+      end
+    ensure
+      File.delete(svg_path) if svg_path && File.exist?(svg_path)
     end
 
     # Render the URI as an SVG QR via qrencode and wrap it in a tiny page.
-    def connect_qr_page(uri)
+    def bunker_qr_page(uri, svg_path)
       require "tempfile"
-      svg = Tempfile.create(["birdwatch-connect", ".svg"]) # 0600, unpredictable name
-      svg_path = svg.path
-      svg.close
-      system("qrencode -t SVG -l M -m 2 -o #{Shellwords.escape(svg_path)} #{Shellwords.escape(uri)}")
-      raise "qrencode failed" unless File.exist?(svg_path) && File.size(svg_path).positive?
-
-      page = Tempfile.create(["birdwatch-connect", ".html"])
+      page = Tempfile.create(["birdwatch-bunker", ".html"])
       page_path = page.path
       page.close
       File.write(page_path, <<~HTML)
@@ -573,11 +663,49 @@ module NostrTui
         p{color:#99a;margin:0}code{max-width:92vw;overflow-wrap:anywhere;color:#8892a6}
         </style></head><body><h1>BIRDWATCH · NOSTR CONNECT</h1>
         #{File.read(svg_path)}
-        <p>Scan with a NIP-46 signer (Amber, nsec.app, …) to pair this device.</p>
+        <p>Scan with a NIP-46 client (bunker対応クライアント) to pair this device.</p>
         <code>#{CGI.escapeHTML(uri)}</code></body></html>
       HTML
-      File.delete(svg_path)
       page_path
+    end
+
+    # Full-screen overlay: the QR on white cells so any phone camera reads it
+    # regardless of terminal theme; URI below for reading/copying.
+    def paint_modal
+      scr = Curses.stdscr
+      m = @modal
+      uri_width = [[scr.maxx - 6, 44].min, 20].max
+      body = ["NOSTR CONNECT · BUNKER", ""]
+      body.concat(m[:qr]) if m[:qr]
+      body << "" if m[:qr]
+      body.concat(m[:uri].scan(/.{1,#{uri_width}}/))
+      body << ""
+      body << "スマホで読み取り → 設定に貼り付け (何かのキーで閉じる)"
+      width = body.map { |l| Renderer.dw(l) }.max
+      y0 = [(scr.maxy - body.size) / 2, 0].max
+      x0 = [(scr.maxx - width) / 2, 0].max
+      qr_from = m[:qr] ? 2 : nil
+      qr_to = m[:qr] ? 2 + m[:qr].size : nil
+      body.each_with_index do |line, i|
+        row = y0 + i
+        break if row >= scr.maxy - 1
+
+        Curses.setpos(row, x0)
+        qr_row = qr_from && i >= qr_from && i < qr_to
+        style = if qr_row
+                  Curses.color_pair(QR_PAIR)
+                elsif i.zero?
+                  Curses.color_pair(ACCENT)
+                else
+                  Curses.color_pair(DIM)
+                end
+        Curses.attron(style) { Curses.addstr(line) }
+        rest = scr.maxx - x0 - Renderer.dw(line)
+        if rest.positive?
+          Curses.attron(Curses.color_pair(qr_row ? QR_PAIR : PANEL)) { Curses.addstr(" " * rest) }
+        end
+      end
+      Curses.refresh
     end
 
     # Settings tab: edit my profile (kind 0) as one line of JSON in $EDITOR.
@@ -647,8 +775,6 @@ module NostrTui
         open_external("xdg-open #{Shellwords.escape("https://npub.world/#{pk}")}")
         return
       end
-      # Settings tab: o opens the NIP-46 nostr connect QR in the browser.
-      return open_connect_qr if @tab == 3
       return unless selected_event
 
       link = @timeline.links(selected_event).first

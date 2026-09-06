@@ -90,6 +90,13 @@ module NostrTui
       transmit(op: "advertise_relays", id: "adv_#{Time.now.to_i}")
     end
 
+    # NIP-46 pairing: ask the daemon for its persistent bunker URI
+    # (bunker://…?relay=…&secret=…). The result arrives as ev:"result" with
+    # a matching id prefix; App#drain routes it to the QR modal.
+    def bunker_secret
+      transmit(op: "bunker_secret", id: "bsec_#{Time.now.to_i}")
+    end
+
     # Remove a configured relay (local config only).
     def relay_remove(url)
       transmit(op: "relay_remove", id: "rm_#{Time.now.to_i}", params: { url: url })

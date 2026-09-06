@@ -8,3 +8,6 @@ gem "sqlite3", "~> 2.0"
 
 # nostr-tui: terminal rendering
 gem "curses", "~> 1.4"
+
+# nostr-tui: NIP-46 connect QR (optional at runtime — falls back to URI text)
+gem "rqrcode", "~> 3.2"
