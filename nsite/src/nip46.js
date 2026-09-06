@@ -22,6 +22,14 @@ export function parseBunkerUri(uri) {
 // slow, and the daemon answers every method (even errors) with a response.
 const REQUEST_TIMEOUT_MS = 30000
 
+// Errors don't settle a request immediately: another NIP-46 responder that
+// does NOT hold the current secret may share the signer pubkey on the relays
+// and answer faster with a misleading error (observed 2026-09-06: a
+// non-nostrd signer replied flat "invalid secret" ~1s before the real
+// daemon's response). Wait ERROR_GRACE_MS for a success; if none comes,
+// reject with the most authoritative error seen (structured beats flat).
+const ERROR_GRACE_MS = 12000
+
 export class BunkerClient {
   constructor(relays = null) {
     this.relays = relays || new RelaySet([])
@@ -64,10 +72,27 @@ export class BunkerClient {
     }
     const pending = this.pending.get(msg.id)
     if (!pending) return
+    if (msg.error) {
+      // Prefer structured errors ({code,message}) over flat strings — the
+      // real daemon's error arrives as an object; shadow signers answer
+      // with strings. First structured error wins; strings only fill the gap.
+      if (!pending.error || (typeof pending.error === 'string' && typeof msg.error !== 'string')) {
+        pending.error = msg.error
+      }
+      if (!pending.errorTimer) {
+        pending.errorTimer = setTimeout(() => {
+          clearTimeout(pending.timer)
+          this.pending.delete(msg.id)
+          const err = pending.error
+          pending.reject(new Error(typeof err === 'string' ? err : (err?.message || 'リクエスト失敗')))
+        }, ERROR_GRACE_MS)
+      }
+      return
+    }
     clearTimeout(pending.timer)
+    if (pending.errorTimer) clearTimeout(pending.errorTimer)
     this.pending.delete(msg.id)
-    if (msg.error) pending.reject(new Error(msg.error))
-    else pending.resolve(msg.result)
+    pending.resolve(msg.result)
   }
 
   request(method, params) {
