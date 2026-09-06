@@ -44,10 +44,9 @@ DEFAULT_SERVERS = %w[
   https://blossom.primal.net
 ].freeze
 
-# nsites gateways known to resolve; the manifest is discoverable by any of
-# them that watch the daemon's write relays. We print the canonical NIP-5A
-# URL for each regardless — they 404 until they pick the manifest up.
-GATEWAYS = %w[nsite.lol nsite.cash nsite.app].freeze
+# NIP-5A host gateways that exist today. They resolve nsites by watching
+# relays for manifest events; a fresh publish can take a bit to appear.
+GATEWAYS = %w[nsite.lol].freeze
 
 def die(msg)
   warn "nostr-nsite: #{msg}"
