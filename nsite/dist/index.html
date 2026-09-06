@@ -40,6 +40,11 @@
     .app-bar__logo { border-radius: 10px; }
     .app-bar__brand { border-radius: 11px; }
 
+    /* the banner's own display:flex beat the UA [hidden] rule, so the ✗
+       button could never visually dismiss it (N, 2026-09-06). Keep the
+       hidden attribute authoritative app-wide. */
+    [hidden] { display: none !important; }
+
     /* install hint banner (iOS never shows a native one) */
     .install-banner {
       display: flex;
