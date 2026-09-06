@@ -21,11 +21,16 @@ Rails.application.configure do
   # Enable serving of images, stylesheets, and JavaScripts from an asset server.
   # config.asset_host = "http://assets.example.com"
 
-  # Assume all access to the app is happening through a SSL-terminating reverse proxy.
-  config.assume_ssl = true
+  # This app is served directly over plain HTTP on loopback (rails server -b 127.0.0.1,
+  # no TLS-terminating proxy). Rails 8's production default assume_ssl=true makes every
+  # request look like HTTPS to Rails, so the browser's http:// Origin fails the CSRF
+  # origin check and every POST dies with InvalidAuthenticityToken.
+  config.assume_ssl = false
 
-  # Force all access to the app over SSL, use Strict-Transport-Security, and use secure cookies.
-  config.force_ssl = true
+  # force_ssl would 301-redirect http://127.0.0.1:3000 to an https:// URL nothing serves,
+  # and mark cookies Secure so plain-http browsers would drop the session. Flip both of
+  # these back on only if this app ever goes behind a real TLS terminator.
+  config.force_ssl = false
 
   # Skip http-to-https redirect for the default health check endpoint.
   # config.ssl_options = { redirect: { exclude: ->(request) { request.path == "/up" } } }
