@@ -37,6 +37,16 @@
        hidden attribute authoritative app-wide. */
     [hidden] { display: none !important; }
 
+    /* 2026-09-07 N: on cold starts the "新規投稿" compose dialog (and the
+       QR/search dialogs) could flash for an instant. app.js is a deferred
+       module, so when first paint wins the race against Material Web's
+       custom-element upgrade, <md-dialog> is still an undefined element and
+       its slotted content (headline, textarea, キャンセル/投稿 buttons)
+       paints inline at the page bottom. Hide dialogs until they are defined;
+       once upgraded, md-dialog controls its own visibility (closed = it
+       renders nothing) and the rule stops matching. */
+    md-dialog:not(:defined) { display: none !important; }
+
     /* 2026-09-07 N: pulling down at the very top dragged the whole page down,
        sticky app bar included — that is iOS rubber-band overscroll on the
        document scroller, which position:sticky cannot opt out of. Kill the
