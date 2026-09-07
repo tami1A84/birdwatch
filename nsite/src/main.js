@@ -142,6 +142,31 @@ function emptyState(title, body, icon = 'forum') {
   return el
 }
 
+// 未接続時に出す案内。全体フィードへのフォールバックは廃止(N, 2026-09-07):
+// タイムラインはbunker接続前提なので、接続方法の案内とボタンだけを置く。
+// pending中の接続が後から決まった場合は起動フックがフォロイーに差し替える。
+function showNotConnected(list) {
+  lastFeedMode = 'not-connected'
+  lastFeedPk = null
+  list.innerHTML = ''
+  const es = emptyState('接続していません',
+    'タイムラインはフォロー中のアカウントの投稿です。設定でbunkerに接続すると表示されます。')
+  if (localStorage.getItem(URI_KEY)) {
+    const retry = document.createElement('md-outlined-button')
+    retry.textContent = '再接続'
+    retry.addEventListener('click', () => {
+      whenConnected = connectStored(() => loadFeed())
+    })
+    es.appendChild(retry)
+  }
+  const open = document.createElement('md-filled-button')
+  open.textContent = '設定を開く'
+  open.addEventListener('click', () => showView(1))
+  es.appendChild(open)
+  list.appendChild(es)
+  return lastFeedMode
+}
+
 function noteCard(ev) {
   const p = profiles.get(ev.pubkey) || {}
   const card = document.createElement('article')
@@ -188,11 +213,17 @@ async function loadFeed() {
   list.appendChild(emptyState('読み込み中…', 'リレーからタイムラインを取得しています。'))
   lastFeedLoadAt = Date.now()
   try {
+    // 未接続でURIも無いなら読みに行くものが無い — リレー待ちもREQも不要で、
+    // 即案内を出す。
+    if (!userPk && !localStorage.getItem(URI_KEY)) {
+      return showNotConnected(list)
+    }
     // ページ復帰直後のSafariでは REQ を送っても届かない — 1本でも開くのを待つ
     await relays.ready(6000)
     if (run !== feedRun) return
     // 起動直後でbunker接続がまだ決まっていないなら短く待つ(フォロイーの
-    // タイムラインを最初から出すため)。8秒で諦めたら全体表示に落ちる。
+    // タイムラインを最初から出すため)。8秒で決まらなくても全体表示には落とさ
+    // ない — 未接続の案内を出し、接続が後から決まれば起動フックが差し替える。
     if (!userPk && whenConnected) {
       await Promise.race([
         whenConnected,
@@ -200,18 +231,13 @@ async function loadFeed() {
       ])
       if (run !== feedRun) return
     }
-    let notes
-    if (userPk) {
-      lastFeedMode = 'following'
-      lastFeedPk = userPk
-      contacts = await fetchContacts(relays, userPk)
-      notes = await fetchTimeline(relays, [...contacts, userPk])
-    } else {
-      // 未接続(閲覧のみ): フォロー一覧が取れないので全体の最近の投稿を表示
-      lastFeedMode = 'global'
-      lastFeedPk = null
-      notes = await fetchTimeline(relays, null)
+    if (!userPk) {
+      return showNotConnected(list)
     }
+    lastFeedMode = 'following'
+    lastFeedPk = userPk
+    contacts = await fetchContacts(relays, userPk)
+    const notes = await fetchTimeline(relays, [...contacts, userPk])
     if (run !== feedRun) return
     profiles = await fetchProfiles(relays,
       [...new Set(notes.map((n) => n.pubkey))])
@@ -552,14 +578,14 @@ document.addEventListener('visibilitychange', () => {
   if (Date.now() - lastFeedLoadAt > 2 * 60 * 1000) loadFeed()
 })
 
-// Home first; the feed reads work with or without the bunker.
+// Home first. Feed reads require the bunker — no global-feed fallback since
+// 2026-09-07 (N): an unconnected app shows the connect prompt only.
 showView(0)
 ;(async () => {
   // フォロー一覧(kind 3)は公開イベントなので、前回接続時にキャッシュした
   // 公開鍵があればbunkerの接続を待たずにフォロイーのタイムラインを直接取りに
-  // 行く。旧実装は「全体フィードを先に表示 → 接続後に再読込」の二段描画で、
-  // 起動のたびにリロードが見えていた(2026-09-06 N指摘)。全体表示は接続も
-  // 鍵キャッシュも無い初回訪問時のフォールバックに格下げ。
+  // 行く。未接続時に全体フィードへフォールバックする挙動は廃止(2026-09-07
+  // N指摘): 接続が決まるまでは接続を促す案内を出すだけ。
   relays.open()
   const cachedPk = localStorage.getItem(PK_KEY)
   if (cachedPk) {
@@ -573,7 +599,7 @@ showView(0)
   const firstMode = await loadFeed()
   const ok = await whenConnected
   // 8秒以内に接続が決まっていれば loadFeed は既にフォロイーを出しているので
-  // 何もしない。全体表示のまま残った場合(接続の遅延/失敗)と、接続で公開鍵が
+  // 何もしない。未接続案内のまま残った場合(接続の遅延/失敗)と、接続で公開鍵が
   // 入れ替わった場合だけ、ここでフォロイーに差し替える。
   if (ok && (firstMode !== 'following' || lastFeedPk !== userPk)) loadFeed()
 })()

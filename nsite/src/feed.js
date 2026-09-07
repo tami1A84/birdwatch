@@ -35,7 +35,9 @@ export async function fetchTimeline(relays, authors) {
   const filter = {
     kinds: [1], limit: 100, since: Math.floor(Date.now() / 1000) - 48 * 3600,
   }
-  // authors == null -> browse mode (no contact list available): global notes
+  // authors is always the follow set (self included). There is no
+  // browse/global mode since 2026-09-07 (N): an unset or empty list would
+  // widen this to all authors, which the app deliberately no longer does.
   if (authors?.length) filter.authors = [...new Set(authors)].slice(0, 400)
   const notes = await relays.query(filter)
   const unique = new Map()
