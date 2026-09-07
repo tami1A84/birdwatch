@@ -37,6 +37,15 @@
        hidden attribute authoritative app-wide. */
     [hidden] { display: none !important; }
 
+    /* 2026-09-07 N: pulling down at the very top dragged the whole page down,
+       sticky app bar included — that is iOS rubber-band overscroll on the
+       document scroller, which position:sticky cannot opt out of. Kill the
+       root scroller's vertical bounce: iOS 16+ and Chrome honor
+       overscroll-behavior on <html> when the document overflows (every view
+       here does). Dialogs' inner scrollers keep their own behavior, and
+       normal scrolling is unaffected (this is not touch-action). */
+    html { overscroll-behavior-y: none; }
+
     /* install hint banner (iOS never shows a native one) */
     .install-banner {
       display: flex;
