@@ -174,7 +174,7 @@ OptionParser.new do |o|
   o.on("--gateway-relay URL", "extra relay to rebroadcast the manifest to (repeatable/comma-sep)") do |v|
     (opts[:gateway_relays] ||= []).concat(v.split(","))
   end
-  o.on("--no-gateway-relays", "skip rebroadcasting the manifest to gateway relays") { |v| opts[:skip_gateway_relays] = v }
+  o.on("--no-gateway-relays", "skip rebroadcasting the manifest to gateway relays") { opts[:skip_gateway_relays] = true }
 end.parse!
 die "a directory to publish is required" unless ARGV[0]
 die "no such directory: #{ARGV[0]}" unless File.directory?(ARGV[0])
