@@ -288,9 +288,16 @@ function startLiveFeed() {
 
 // ----- compose dialog ------------------------------------------------------
 
+// 投稿ダイアログ。下書きはlocalStorageに常時退避する: アプリがバックグラ
+// ウンドに回ると closeOverlays() が自動で閉じるため(iOSスナップショット対策)、
+// 書きかけが消えないように。投稿成功でクリア、キャンセルでは保持(従来動作:
+// 閉じてもテキストは残る、と同じ)。
+const DRAFT_KEY = 'bw_compose_draft'
+
 function openCompose() {
   const dialog = $('compose-dialog')
   if (!dialog) return
+  $('compose-text').value = localStorage.getItem(DRAFT_KEY) || ''
   dialog.show()
   requestAnimationFrame(() => $('compose-text').focus())
 }
@@ -308,6 +315,7 @@ async function submitCompose() {
     const res = await relays.publish(signed)
     if (!res.ok) throw new Error('リレーが受け付けませんでした')
     $('compose-text').value = ''
+    localStorage.removeItem(DRAFT_KEY)
     $('compose-dialog').close()
     seenIds.add(signed.id) // ライブ購読のエコーで二重表示にならないように
     $('feed').prepend(noteCard(signed))
@@ -469,6 +477,45 @@ function showView(i) {
   }
 }
 
+// ----- boot splash reveal (N, 2026-09-07 round 3) ---------------------------
+// index.html は静的なスプラッシュ(アプリアイコンの脈動)を持ち、app.js が
+// 最初の実状態を描くまで body.booting で他の全要素を隠している。reveal は
+// タイムライン/未接続案内/エラーのいずれかが実際に置かれた直後だけ。
+// 「タイムライン表示の前に何も表示させない」のため、シェルだけの状態は
+// 一瞬も見せない。
+let revealed = false
+
+function revealApp() {
+  if (revealed) return
+  revealed = true
+  document.body.classList.remove('booting')
+  const splash = $('splash')
+  if (splash) {
+    splash.style.opacity = '0'
+    setTimeout(() => splash.remove(), 300)
+  }
+}
+
+// ----- snapshot hygiene (N, 2026-09-07 round 3) -----------------------------
+// iOS はホーム画面アプリの「最後の見た目」を次回起動時に一瞬出す(スナップ
+// ショット)。QRスキャン(カメラ)や投稿ダイアログを開いたままバックグラウンド
+// に回ると、次回起動の最初の一枚がそのダイアログになる — これがNのスクショ
+// の正体。アプリが前景を離れる時はオーバーレイを全部閉じてカメラも止めるの
+// で、スナップショットは常に素のアプリ画面になる。composeの下書きは
+// localStorageに退避するので、自動クローズで書きかけが消えることはない。
+function closeOverlays() {
+  for (const id of ['compose-dialog', 'qr-dialog', 'search-dialog']) {
+    const d = $(id)
+    if (d?.open) d.close()
+  }
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') closeOverlays()
+})
+window.addEventListener('pagehide', closeOverlays)
+window.addEventListener('freeze', closeOverlays) // Page Lifecycle (対応時のみ発火)
+
 // ----- QR camera scan (pair the bunker by reading the daemon's QR) ----------
 
 let qrStream = null
@@ -546,6 +593,9 @@ $('bunker-form').addEventListener('submit', (e) => {
 $('btn-disconnect').addEventListener('click', disconnect)
 
 $('compose-fab').addEventListener('click', openCompose)
+$('compose-text').addEventListener('input', (e) => {
+  localStorage.setItem(DRAFT_KEY, e.target.value)
+})
 $('compose-cancel').addEventListener('click', () => $('compose-dialog').close())
 $('compose-submit').addEventListener('click', submitCompose)
 
@@ -599,6 +649,7 @@ showView(0)
   }
   whenConnected = connectStored()
   const firstMode = await loadFeed()
+  revealApp()
   const ok = await whenConnected
   // 8秒以内に接続が決まっていれば loadFeed は既にフォロイーを出しているので
   // 何もしない。未接続案内のまま残った場合(接続の遅延/失敗)と、接続で公開鍵が

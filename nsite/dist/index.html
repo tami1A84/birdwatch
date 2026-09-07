@@ -47,6 +47,41 @@
        renders nothing) and the rule stops matching. */
     md-dialog:not(:defined) { display: none !important; }
 
+    /* 2026-09-07 N round 3: 起動の瞬間にQR/投稿/検索ダイアログの中身が一瞬
+       見えることがある。v11の :not(:defined) ルールは「未アップグレードの
+       ダイアログ」だけを覆う。ここではさらに広げて、app.js が最初の実状態
+       (タイムライン/未接続案内/エラー) を描くまで、スプラッシュ以外の全要素
+       を隠す。スプラッシュは素のHTML+CSSなので最初のペイントから確実に上が
+       り、JSとの競合レースが存在しない。「タイムライン表示の前に何も表示さ
+       せない」+ アイコンの起動アニメーション(N了承)を両方満たす。 */
+    body.booting > :not(#splash) { visibility: hidden !important; }
+    #splash {
+      position: fixed;
+      inset: 0;
+      z-index: 1000;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #FAF8FE; /* = theme-color (light)。起動 storyboard と同一色 */
+      transition: opacity .25s ease;
+    }
+    @media (prefers-color-scheme: dark) {
+      #splash { background: #141317; }
+    }
+    #splash img {
+      width: 72px;
+      height: 72px;
+      border-radius: 16px;
+      animation: splash-pulse 1.4s ease-in-out infinite;
+    }
+    @keyframes splash-pulse {
+      0%, 100% { transform: scale(1); opacity: .7; }
+      50% { transform: scale(1.08); opacity: 1; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      #splash img { animation: none; }
+    }
+
     /* 2026-09-07 N: pulling down at the very top dragged the whole page down,
        sticky app bar included — that is iOS rubber-band overscroll on the
        document scroller, which position:sticky cannot opt out of. Kill the
@@ -79,7 +114,11 @@
   </style>
   <script type="module" src="./app.js"></script>
 </head>
-<body class="page-home">
+<body class="page-home booting">
+  <div id="splash" aria-hidden="true">
+    <img src="./icon-192.png" alt="" width="72" height="72">
+  </div>
+
   <header class="app-bar">
     <a class="app-bar__brand" href="./" aria-label="birdwatch ホーム">
       <img class="app-bar__logo" src="./icon-64.png" alt="birdwatch" width="28" height="28">
@@ -208,5 +247,16 @@
   </md-dialog>
 
   <div id="app-toast" class="toast" role="status" aria-live="polite"></div>
+
+  <script>
+    // 万一 app.js が読み込めなかった時の逃げ道: 12秒でスプラッシュを外す。
+    // (通常は app.js が最初の実状態を描いた直後に revealApp() で外すので、
+    // このタイマーが効くのは JS が死んだ場合だけ)
+    setTimeout(function () {
+      if (document.body) document.body.classList.remove('booting')
+      var s = document.getElementById('splash')
+      if (s) s.remove()
+    }, 12000)
+  </script>
 </body>
 </html>
