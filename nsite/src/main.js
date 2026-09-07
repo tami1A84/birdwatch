@@ -210,7 +210,12 @@ async function loadFeed() {
   const run = ++feedRun
   const list = $('feed')
   list.innerHTML = ''
-  list.appendChild(emptyState('読み込み中…', 'リレーからタイムラインを取得しています。'))
+  // 読み込み表示はすぐには出さない — 接続済みなら結果が一瞬で返るので、即出す
+  // とただの点滅になる(N, 2026-09-07)。0.8秒経っても結果が出ない時だけ出す。
+  const loading = emptyState('読み込み中…', 'リレーからタイムラインを取得しています。')
+  const loadingTimer = setTimeout(() => {
+    if (run === feedRun) list.appendChild(loading)
+  }, 800)
   lastFeedLoadAt = Date.now()
   try {
     // 未接続でURIも無いなら読みに行くものが無い — リレー待ちもREQも不要で、
@@ -265,6 +270,8 @@ async function loadFeed() {
     es.appendChild(retry)
     list.appendChild(es)
     return lastFeedMode
+  } finally {
+    clearTimeout(loadingTimer)
   }
 }
 

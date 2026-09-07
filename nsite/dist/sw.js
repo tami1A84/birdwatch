@@ -2,7 +2,7 @@
 // Navigations (the HTML) go to the network first so an update ships on the
 // next app open; the cached copy is the offline fallback. Everything else is
 // cache-first with a version bump to force a refresh.
-const CACHE = 'bw-shell-v7'
+const CACHE = 'bw-shell-v8'
 const ASSETS = ['./', './app.js', './style.css', './manifest.webmanifest',
                 './icon-64.png', './icon-192.png', './icon-512.png',
                 './favicon.ico',
