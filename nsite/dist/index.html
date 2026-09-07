@@ -64,6 +64,7 @@
       justify-content: center;
       background: #FAF8FE; /* = theme-color (light)。起動 storyboard と同一色 */
       transition: opacity .25s ease;
+      pointer-events: none; /* フェードアウト中も下のUIを邪魔しない */
     }
     @media (prefers-color-scheme: dark) {
       #splash { background: #141317; }
@@ -250,9 +251,11 @@
 
   <script>
     // 万一 app.js が読み込めなかった時の逃げ道: 12秒でスプラッシュを外す。
-    // (通常は app.js が最初の実状態を描いた直後に revealApp() で外すので、
-    // このタイマーが効くのは JS が死んだ場合だけ)
+    // ただし app.js モジュールが評価済み(data-bw-booted)なら何もしない —
+    // 回線が遅いだけの時に空のシェルを見せてしまうのを防ぐ(review指摘)。
+    // その場合のrevealは app.js 側の revealApp() が担う。
     setTimeout(function () {
+      if (document.documentElement.hasAttribute('data-bw-booted')) return
       if (document.body) document.body.classList.remove('booting')
       var s = document.getElementById('splash')
       if (s) s.remove()

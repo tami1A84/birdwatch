@@ -21,6 +21,12 @@ import { BunkerClient, parseBunkerUri } from './nip46.js'
 import { DEFAULT_READ_RELAYS, SEARCH_RELAYS, fetchContacts, fetchTimeline, fetchProfiles,
          renderContent, timeLabel, npub } from './feed.js'
 
+// app.js モジュールの評価が始まった印。index.html の12sフェイルセーフは、
+// この印が無い場合(import解決失敗/JS死)だけスプラッシュを外す。印があれば
+// いくら遅くても revealApp() が面倒を見るので、健全なアプリが空のシェルを
+// 見せることはない。
+document.documentElement.dataset.bwBooted = '1'
+
 const SK_KEY = 'bw_ephem_sk'
 const URI_KEY = 'bw_bunker_uri'
 const PK_KEY = 'bw_user_pk'
@@ -506,7 +512,10 @@ function revealApp() {
 function closeOverlays() {
   for (const id of ['compose-dialog', 'qr-dialog', 'search-dialog']) {
     const d = $(id)
-    if (d?.open) d.close()
+    // quick=true: M3のクローズアニメーション(~250-400ms)をスキップし、この
+    // タスク内でネイティブのdialogを閉じきる。アニメーション中のフレームを
+    // iOSがスナップショットすると結局ダイアログが写るため(review指摘)。
+    if (d?.open) { d.quick = true; d.close() }
   }
 }
 
