@@ -14,8 +14,38 @@
   <link rel="icon" href="./favicon.ico" sizes="16x16 32x32 48x48">
   <link rel="apple-touch-icon" href="./icon-192.png">
   <link rel="stylesheet" href="./style.css">
+  <!-- LINE Seed JP (official seed.line.me web fonts, OFL): fetch early but
+       low-priority so app.js always wins the bandwidth race on first visit. -->
+  <link rel="preload" href="./line-seed-jp-regular.woff2" as="font" type="font/woff2" crossorigin fetchpriority="low">
+  <link rel="preload" href="./line-seed-jp-bold.woff2" as="font" type="font/woff2" crossorigin fetchpriority="low">
   <style>
     /* nsite-only additions (style.css is kept byte-identical to the Rails app) */
+    /* 2026-09-07 N: app face = LINE Seed JP (official seed.line.me web fonts,
+       SIL OFL 1.1 — line-seed-jp-OFL.txt). Replaces Roboto Serif app-wide;
+       roboto-serif-latin.woff2 is gone from dist (style.css still declares the
+       face, but no element resolves to it, so the browser never fetches it).
+       The token keeps its historical name because style.css must stay
+       byte-identical to the Rails app — the value is overridden here instead
+       of renamed there. Regular+Bold cover every weight the UI uses (400/700);
+       heavier label weights from Material tokens resolve down to Bold. */
+    @font-face {
+      font-family: "LINE Seed JP";
+      src: url("./line-seed-jp-regular.woff2") format("woff2");
+      font-weight: 400;
+      font-style: normal;
+      font-display: swap;
+    }
+    @font-face {
+      font-family: "LINE Seed JP";
+      src: url("./line-seed-jp-bold.woff2") format("woff2");
+      font-weight: 700;
+      font-style: normal;
+      font-display: swap;
+    }
+    :root {
+      --font-serif: "LINE Seed JP", "Hiragino Kaku Gothic ProN", "Yu Gothic",
+                    "Noto Sans JP", "Noto Sans CJK JP", sans-serif;
+    }
     .qr-video { width: 100%; max-height: 60vh; border-radius: var(--radius-md); background: #000; }
     .settings-form__buttons { display: flex; gap: 8px; flex-wrap: wrap; }
 

@@ -2,11 +2,12 @@
 // Navigations (the HTML) go to the network first so an update ships on the
 // next app open; the cached copy is the offline fallback. Everything else is
 // cache-first with a version bump to force a refresh.
-const CACHE = 'bw-shell-v13'
+const CACHE = 'bw-shell-v14'
 const ASSETS = ['./', './app.js', './style.css', './manifest.webmanifest',
                 './icon-64.png', './icon-192.png', './icon-512.png',
                 './favicon.ico',
-                './roboto-serif-latin.woff2', './material-symbols-rounded.woff2']
+                './line-seed-jp-regular.woff2', './line-seed-jp-bold.woff2',
+                './line-seed-jp-OFL.txt', './material-symbols-rounded.woff2']
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(ASSETS)).then(() => self.skipWaiting()))
 })
