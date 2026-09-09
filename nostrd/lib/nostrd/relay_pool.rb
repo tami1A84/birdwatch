@@ -81,9 +81,10 @@ module Nostrd
 
     # Mentions/DM detection: our own NIP-65 inbox relays (separate stream A/B
     # rule). #p on a kind 1111 comment is the parent author, so comments on
-    # our notes arrive here too.
-    def subscribe_inbox(url, sub_id, my_pubkey)
-      queue_req(url, sub_id, NostrCore::Subscription.req(sub_id, { "#p": [my_pubkey], kinds: [1, 7, 1111] }), false)
+    # our notes arrive here too. kinds is overridable — NIP-17 gift wraps
+    # (kind 1059) ride the same sub without a second REQ slot.
+    def subscribe_inbox(url, sub_id, my_pubkey, kinds: [1, 7, 1111])
+      queue_req(url, sub_id, NostrCore::Subscription.req(sub_id, { "#p": [my_pubkey], kinds: kinds }), false)
     end
 
     # NIP-46 bunker transport: requests arrive encrypted to us (kind 24133,

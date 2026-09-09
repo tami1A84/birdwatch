@@ -177,3 +177,22 @@ bin/nostr --nsite-publish DIR [--name birdwatch] [--title T] [--server URL]
 # デーモン署名)し、kind 35128 マニフェストをデーモン署名+publish。
 # ゲートウェイURL(<pubkeyB36><d>.nsite-…)を表示する。
 ```
+
+### send_dm / dms (NIP-17)
+
+NIP-59 gift wrap (kind 1059) で封印された NIP-17 チャット。daemon が wrap/unwrap
+を担当し、ストアには平文の kind 14 rumor のみ置く。
+
+```json
+{"op":"send_dm","id":"d1","params":{"pubkey":"<64hex>","text":"hello"}}
+{"ev":"ack","id":"d1","ok":true,"event_id":"…","published_to":1}
+```
+```json
+{"op":"sub","id":"dm","channel":"dms","params":{"partner":"<64hex>","limit":50}}
+{"ev":"event","sub":"dm","event":{…kind 14…}}
+{"ev":"conversations","sub":"dm","conversations":[{"pubkey":"…","last":…,"count":n}]}
+{"ev":"eod","sub":"dm"}
+```
+`partner` 省略時は会話一覧。gift wrap は相手の NIP-65 inbox 主張リレー
+(`relay_claims_for`) にだけ発行され、どれにも接続していなければ
+接続中リレーへフォールバックする（1059 は受信者以外には暗号文）。

@@ -16,14 +16,18 @@ module Nostrd
     RELAY_SEEKS_PER_TICK = 8
     # Profile sync is one batched authors-REQ per try (rotating relays).
     PROFILE_BATCH = 100
+    # Mentions + NIP-17 inbox filter: kind 1059 (gift wrap) rides the same
+    # p-tagged sub so private DMs arrive without a second REQ slot.
+    INBOX_KINDS = [1, 7, 1111, 1059].freeze
 
-    def initialize(store:, picker:, pool:, my_pubkey: nil, bunker: nil,
+    def initialize(store:, picker:, pool:, my_pubkey: nil, bunker: nil, dm: nil,
                    now: -> { Time.now.to_i }, logger: $stderr)
       @store = store
       @picker = picker
       @pool = pool
       @my_pubkey = my_pubkey
       @bunker = bunker # Nostrd::Bunker, optional (nil = transport disabled)
+      @dm = dm # Nostrd::Dm, optional (nil = NIP-17 gift wraps are ignored)
       @now = now
       @logger = logger
       @followed = []
@@ -180,6 +184,24 @@ module Nostrd
       @store.write_relays_for(@my_pubkey)
     end
 
+    # NIP-17: where a person listens — the inbox (read) half of their newest
+    # author-signed kind 10002. Gift wraps are published ONLY to these
+    # relays; the claim, not a decayed evidence score, decides delivery.
+    def inbox_relays_for(pubkey)
+      @store.relay_claims_for(pubkey, usage: :read)
+    end
+
+    # Sign+publish path for the Dm service: publish to exactly the given
+    # relays (no gossip fan-out — DMs are addressed traffic). If none of
+    # them are dialed, fall back to the connected set: a gift wrap is
+    # ciphertext to everyone but the recipient, so a wide publish leaks
+    # nothing but availability.
+    def publish_to(urls, event)
+      urls = Array(urls) & @pool.connections.keys
+      urls = @pool.connections.keys if urls.empty?
+      @pool.publish(event, urls: urls)
+    end
+
     # --- inbound (called by RelayPool) ---
 
     # Returns contact pubkeys newly adopted from OUR kind 3 (empty normally);
@@ -212,6 +234,14 @@ module Nostrd
     def ingest_unlocked(url, ev)
       @store.record_relay_result(url, success: true)
       return false unless ev.is_a?(Hash) && ev["id"]
+
+      # NIP-17: kind 1059 is sealed ciphertext addressed to us — the Dm
+      # service unwraps and upserts the inner kind-14 rumor; the ciphertext
+      # itself never enters the store.
+      if ev["kind"] == 1059
+        @dm&.handle_gift_wrap(ev, url)
+        return true
+      end
 
       @store.upsert_event(NostrCore::Event.from_h(ev))
       case ev["kind"]
@@ -283,6 +313,16 @@ module Nostrd
         @bunker.ensure_subscribed((@pool.connections.keys + @bunker.relay_targets).uniq)
         @bunker.relay_targets.each do |url|
           @pending_dials << url unless @pool.connections.key?(url)
+        end
+      end
+      # Mentions + NIP-17 inbox: one persistent per-relay sub p-tagged to us,
+      # re-issued every tick like the bunker sub (relay drops clear live
+      # subs, and a queued-but-never-started sub is invisible on the wire).
+      if @my_pubkey
+        @pool.connections.keys.sort.each do |url|
+          next if @pool.sub_live?(url, "inbox")
+
+          @pool.subscribe_inbox(url, "inbox", @my_pubkey, kinds: INBOX_KINDS)
         end
       end
       # Gossip switch wiring: an advertised inbox (or discover) relay is a

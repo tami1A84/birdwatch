@@ -14,6 +14,7 @@ options = {
   db: File.expand_path("~/.local/share/nostrd/nostrd.db"),
   mock: false, live: false,
   relays: %w[wss://relay.damus.io wss://nos.lol wss://relay.nostr.band],
+  local_relay_port: 7777, blossom_port: 7778,
   follows: []
 }
 OptionParser.new do |o|
@@ -33,6 +34,10 @@ OptionParser.new do |o|
   o.on("--history N", Integer, "timeline replay size served to clients (default 100)") do |v|
     options[:history] = v
   end
+  o.on("--local-relay-port N", Integer,
+       "embedded personal relay ws://127.0.0.1:N (0 = off, default 7777)") { |v| options[:local_relay_port] = v }
+  o.on("--blossom-port N", Integer,
+       "embedded blossom server http://127.0.0.1:N (0 = off, default 7778)") { |v| options[:blossom_port] = v }
   o.on("--passphrase-fd N", Integer,
        "read the vault passphrase from this inherited fd (never argv/env)") { |v| options[:passphrase_fd] = v }
   o.on("--new-key", "create a fresh key, write the vault, print pubkey/npub") do
@@ -164,6 +169,8 @@ if options[:live]
   feed = Nostrd::LiveFeed.new { |ev| server&.broadcast_event(ev) }
 
   orchestrator = nil
+  local_relay = nil
+  dm = nil
   pool = Nostrd::RelayPool.new(
     on_event: ->(url, ev) {
       bunker&.handle_event(ev, url: url)
@@ -196,6 +203,9 @@ if options[:live]
     if targets.nil? && write.any?
       warn "publish: #{write.size} write relays known, none connected - broadcasting"
     end
+    # The local relay counts as a write target even though it is not in the
+    # person_relays evidence set — our own outbox of record.
+    targets = (targets || pool.connections.keys) | [local_relay&.url].compact if local_relay
     urls = pool.publish(event, urls: targets)
     if urls.any?
       store.upsert_event(NostrCore::Event.from_h(event))
@@ -207,6 +217,33 @@ if options[:live]
     store: store, picker: NostrCore::RelayPicker.new,
     pool: pool, my_pubkey: signer.pubkey, bunker: bunker
   )
+  # --- embedded services: local relay + blossom + NIP-17 DM ---------------
+  # Local relay: a chorus-style personal relay over our own store. It is a
+  # HIDDEN read+write my_relay (discover: true keeps it dialed; inbox/outbox
+  # stay off so kind 10002 never advertises a loopback url to the world).
+  if options[:local_relay_port] != 0
+    require_relative "../lib/nostrd/local_relay"
+    local_relay = Nostrd::LocalRelay.new(store: store, port: options[:local_relay_port],
+                                         allowed_pubkeys: [signer.pubkey])
+    local_relay.start
+    store.upsert_my_relay(local_relay.url, read: true, inbox: false, write: true,
+                          outbox: false, discover: true)
+  end
+  if options[:blossom_port] != 0
+    require_relative "../lib/nostrd/blossom"
+    Nostrd::Blossom::Server.new(dir: File.expand_path("~/.local/share/nostrd/blobs"),
+                                port: options[:blossom_port]).start
+  end
+  # NIP-17 DM: wrap (needs our key) + addressed publish + unwrap arrivals.
+  dm = Nostrd::Dm.new(store: store, socket_db_path: options[:db], my_pubkey: signer.pubkey,
+                      seckey: signer.seckey,
+                      sign_and_publish: lambda do |rumor, to, relays|
+                        seal, gift = NostrCore::GiftWrap.wrap(rumor: rumor, sender_priv: signer.seckey,
+                                                              recipient_pub: to)
+                        published = orchestrator.publish_to(relays, gift)
+                        { "seal" => seal, "gift" => gift, "published_to" => published }
+                      end,
+                      inbox_relays_for: ->(pk) { orchestrator&.inbox_relays_for(pk) || [] })
   # --follow args are merged with follows persisted in the DB (survive restarts)
   f = (options[:follows] + store.follows).uniq
   # follow() dials person relays synchronously (up to HANDSHAKE_TIMEOUT each,
@@ -242,6 +279,8 @@ server = Nostrd::Server.new(store: store, socket_path: options[:socket], signer:
                             # then the op republishes kind 3 via the signer.
                             follow: ->(pk) { orchestrator&.follow(pk) },
                             unfollow: ->(pk) { orchestrator&.unfollow(pk) },
+                            send_dm: ->(pk, text) { dm&.send_dm(text, to: pk) },
+                            dms: ->(partner:, limit:) { dm&.dms(partner: partner, limit: limit) || {} },
                             # Gossip relay switches: local-only merge (inbox=>read, outbox=>write).
                             relay_flags: ->(p) {
                               o = orchestrator

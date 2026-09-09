@@ -11,7 +11,7 @@ module Nostrd
     def initialize(store:, socket_path:, signer: ->(_name, _params) { true }, publisher: nil,
                    info: nil, relay_flags: nil, advertise_relays: nil, relay_remove: nil, lock: nil, unlock: nil, import_key: nil,
                    one_shot: nil, history: 100, bunker: nil,
-                   follow: nil, unfollow: nil)
+                   follow: nil, unfollow: nil, send_dm: nil, dms: nil)
       @store = store
       @path = socket_path
       @signer = signer
@@ -28,6 +28,8 @@ module Nostrd
       # may still pass params.limit to override per subscription
       @follow = follow # pubkey -> orchestrator.follow (state + dial)
       @unfollow = unfollow # pubkey -> orchestrator.unfollow
+      @send_dm = send_dm # (pubkey, text) -> {"event_id"=>, "published_to"=>} (Nostrd::Dm)
+      @dms = dms # (partner:, limit:) -> {"events"=>[...]} | {"conversations"=>[...]}
       @bunker = bunker # Nostrd::Bunker (nil = NIP-46 transport disabled)
       @listeners = [] # timeline subscriber conns for live broadcast
       @mos = Mutex.new
@@ -134,6 +136,7 @@ module Nostrd
       when "announce_repo" then announce_repo(conn, msg)
       when "follow" then follow_op(conn, msg)
       when "unfollow" then unfollow_op(conn, msg)
+      when "send_dm" then send_dm_op(conn, msg)
       when "delete_note" then delete_note_op(conn, msg)
       when "search" then search_op(conn, msg)
       when "bunker_secret" then bunker_secret_op(conn, msg)
@@ -155,9 +158,24 @@ module Nostrd
         send_profiles(conn, sub: msg["id"], for_events: events)
         reply(conn, ev: "eod", sub: msg["id"])
         @mos.synchronize { @listeners << conn unless @listeners.include?(conn) }
+      when "dms"
+        dms_channel(conn, msg)
       else
         reply(conn, ev: "error", code: "unknown_channel", message: msg["channel"].to_s)
       end
+    end
+
+    # Channel "dms": stored kind-14 chat history. partner given = one thread
+    # as event frames; omitted = conversation list — then eod, following the
+    # profiles/eod replay pattern (no live listener registration).
+    def dms_channel(conn, msg)
+      p = msg.dig("params") || {}
+      out = @dms&.call(partner: p["partner"], limit: p["limit"]) || {}
+      Array(out["events"]).each { |e| reply(conn, ev: "event", sub: msg["id"], event: e) }
+      if out["conversations"]
+        reply(conn, ev: "conversations", sub: msg["id"], conversations: out["conversations"])
+      end
+      reply(conn, ev: "eod", sub: msg["id"])
     end
 
     # kind 0 metadata for the authors on screen; sent after history, before eod.
@@ -351,6 +369,20 @@ module Nostrd
     end
 
     # --- web client ops (follows, deletions, search) --------------------
+
+    # NIP-17: sign + publish a gift-wrapped kind-14 rumor to the recipient's
+    # inbox relays. The Dm service owns the protocol; the daemon owns the
+    # keys — clients send intent (pubkey + text), never events.
+    def send_dm_op(conn, msg)
+      p = msg["params"] || {}
+      raise ArgumentError, "send_dm needs text" if p["text"].to_s.empty?
+
+      out = @send_dm&.call(p["pubkey"].to_s, p["text"]) || {}
+      reply(conn, ev: "ack", id: msg["id"], ok: true,
+                 event_id: out["event_id"], published_to: out["published_to"] || 0)
+    rescue StandardError => e
+      reply(conn, ev: "ack", id: msg["id"], ok: false, error: e.message)
+    end
 
     # Follow: orchestrator state + store, then republish the contact list
     # (kind 3) so relays learn about the change.

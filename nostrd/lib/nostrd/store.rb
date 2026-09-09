@@ -363,6 +363,18 @@ module Nostrd
       end.sort_by { |_, s| -s }
     end
 
+    # Relays a person explicitly claims (NIP-65) in their newest author-signed
+    # kind 10002: usage :read = inbox half, :write = outbox half. Evidence
+    # scores can't express this — claims don't decay, fetch evidence does —
+    # and the NIP-17 DM delivery set must follow the claim, not the score.
+    def relay_claims_for(pubkey, usage: :read)
+      col = usage == :write ? "write" : "read"
+      @db.execute(
+        "SELECT url FROM person_relays WHERE pubkey = ? AND #{col} = 1 AND list_updated IS NOT NULL",
+        [pubkey]
+      ).map(&:first)
+    end
+
     def write_relays_for(pubkey)
       @db.execute(
         "SELECT url FROM person_relays WHERE pubkey = ? AND write = 1 " \
@@ -378,6 +390,67 @@ module Nostrd
         "SELECT url FROM person_relays WHERE pubkey = ? " \
         "ORDER BY write DESC, last_fetched IS NULL, last_fetched DESC", [pubkey]
       ).map(&:first)
+    end
+
+    # --- embedded local relay (REQ engine for LocalRelay) ---
+
+    # NIP-01 filter query. filters: one filter hash or an array of them (OR).
+    # Returns NostrCore::Event rows, deduped by id, newest first, capped at
+    # 1000 overall. Tag matching (#e/#p/#a) is a parameterized LIKE over the
+    # JSON tags column with pattern '%["<name>","<value>"%': the leading
+    # quote keeps name "e" from matching "ex", the trailing quote keeps
+    # value "abc" from matching "abcd" — exact for NIP-01 id/pk/address
+    # values (which never contain JSON-escaped chars). % _ \ inside the
+    # value are escaped and ESCAPE '\' declared, same discipline as search.
+    def relay_query(filters)
+      hex64 = ->(list) { Array(list).select { |v| v.is_a?(String) && v.match?(/\A[0-9a-f]{64}\z/) } }
+      esc = ->(s) { s.gsub(/[\\%_]/) { |c| "\\#{c}" } }
+      out = {}
+      # Hash must be wrapped explicitly: bare Array() would explode a hash
+      # into [key, value] pairs (and {} into nothing).
+      (filters.is_a?(Hash) ? [filters] : Array(filters)).each do |f|
+        next unless f.is_a?(Hash)
+
+        where = []
+        args = []
+        ids = hex64.call(f["ids"])
+        unless ids.empty?
+          where << "id IN (#{Array.new(ids.size, "?").join(",")})"
+          args.concat(ids)
+        end
+        authors = hex64.call(f["authors"])
+        unless authors.empty?
+          where << "pubkey IN (#{Array.new(authors.size, "?").join(",")})"
+          args.concat(authors)
+        end
+        kinds = Array(f["kinds"]).select { |k| k.is_a?(Integer) }
+        unless kinds.empty?
+          where << "kind IN (#{Array.new(kinds.size, "?").join(",")})"
+          args.concat(kinds)
+        end
+        if f["since"].is_a?(Integer)
+          where << "created_at >= ?"
+          args << f["since"]
+        end
+        if f["until"].is_a?(Integer)
+          where << "created_at <= ?"
+          args << f["until"]
+        end
+        %w[e p a].each do |name|
+          vals = Array(f[name] || f["##{name}"]).select { |v| v.is_a?(String) && !v.empty? }
+          next if vals.empty?
+
+          where << "(#{vals.map { "tags LIKE ? ESCAPE '\\'" }.join(" OR ")})"
+          args.concat(vals.map { |v| "%[\"#{name}\",\"#{esc.call(v)}\"%" })
+        end
+        limit = (f["limit"] || 500).to_i.clamp(1, 1000)
+        sql = +"SELECT id, pubkey, created_at, kind, content, tags FROM events"
+        sql << " WHERE #{where.join(" AND ")}" unless where.empty?
+        sql << " ORDER BY created_at DESC LIMIT ?"
+        args << limit
+        @db.execute(sql, args).each { |row| out[row[0]] = row_to_event(row) }
+      end
+      out.values.sort_by(&:created_at).reverse.first(1000)
     end
 
     private
