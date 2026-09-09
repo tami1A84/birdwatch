@@ -5,6 +5,8 @@ require "json"
 require "digest"
 require "base64"
 require "fileutils"
+require "net/http"
+require "uri"
 require_relative "../nostr_core/event"
 require_relative "../nostr_core/bip340"
 
@@ -303,6 +305,61 @@ module Nostrd
         @logger.puts("[blossom] #{msg}")
       rescue StandardError
         nil # a dead logger must not kill the accept loop
+      end
+    end
+
+    # Client for remote Blossom servers (NIP-B7/BUD-02). Public servers carry
+    # the serving load; the embedded one is the private mirror of last
+    # resort. Signing stays with the daemon: callers pass the finished
+    # NIP-98 Authorization header.
+    module Client
+      module_function
+
+      # PUT a blob. Returns [ok, info] (info is a short human string).
+      def put(server, path, body:, mime:, auth:, timeout: 30)
+        uri = URI.parse("#{server.to_s.chomp('/')}/#{path.delete_prefix('/')}")
+        req = Net::HTTP::Put.new(uri)
+        req.body = body
+        req["Authorization"] = auth
+        req["Content-Type"] = mime
+        res = http(uri, timeout) { |h| h.request(req) }
+        [res.code.to_i.between?(200, 299),
+         "#{res.code} #{res.body.to_s[0, 60].gsub(/\s+/, ' ')}"]
+      rescue StandardError => e
+        [false, "ERR #{e.class}"]
+      end
+
+      # GET across candidate servers in order; first 2xx wins. Returns
+      # [body, content_type] or nil when every source misses — the public
+      # first / local mirror last fallback rides on this.
+      def get(urls, path, timeout: 15)
+        urls.compact.each do |url|
+          uri = URI.parse("#{url.to_s.chomp('/')}/#{path.delete_prefix('/')}")
+          res = http(uri, timeout) { |h| h.request(Net::HTTP::Get.new(uri)) }
+          next unless res.code.to_i.between?(200, 299)
+
+          return [res.body.to_s, res["Content-Type"]]
+        rescue StandardError
+          next # dead server, timeout, TLS error: just try the next source
+        end
+        nil
+      end
+
+      def http(uri, timeout)
+        http = Net::HTTP.new(uri.host, uri.port)
+        http.use_ssl = uri.scheme == "https"
+        http.open_timeout = 8
+        http.read_timeout = timeout
+        http.start { |h| yield h }
+      end
+
+      # Loopback hosts must never enter published server tags/manifests —
+      # a private mirror URL is meaningless (and noisy) to the outside.
+      def loopback?(url)
+        host = URI.parse(url.to_s).host.to_s.downcase
+        host == "localhost" || host == "[::1]" || host.start_with?("127.", "::1")
+      rescue URI::Error
+        true # unparseable URLs are treated private, not published
       end
     end
   end

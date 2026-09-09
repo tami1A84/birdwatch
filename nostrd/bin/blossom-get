@@ -1,0 +1,66 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# blossom-get — fetch a blob by sha256 (or blossom URL), candidate servers
+# first, the embedded local mirror as the last resort.
+#
+#   blossom-get <sha256|blossom-url> [options]
+#     -o OUT        write to file (default: stdout)
+#     --server URL  extra source (repeatable, tried first)
+#     --local URL   local mirror (default http://127.0.0.1:7778)
+#     --no-local    skip the local mirror
+#
+# The mirror exists because public servers disappear: a local copy keeps
+# your data readable and restorable (re-upload it to a new server) forever.
+
+require "json"
+require "uri"
+require "optparse"
+require_relative "../lib/nostrd/blossom"
+
+DEFAULT_SERVERS = %w[
+  https://files.sovbit.host
+  https://nostr.download
+  https://cdn.nostrcheck.me
+  https://blossom.primal.net
+].freeze
+
+LOCAL = "http://127.0.0.1:7778"
+
+opts = { local: LOCAL, servers: [] }
+OptionParser.new do |o|
+  o.banner = "usage: blossom-get <sha256|blossom-url> [options]"
+  o.on("-o OUT", "write to file instead of stdout") { |v| opts[:out] = v }
+  o.on("--server URL", "extra source (repeatable, tried first)") { |v| opts[:servers] << v }
+  o.on("--local URL", "local mirror URL (default #{LOCAL})") { |v| opts[:local] = v }
+  o.on("--no-local", "do not fall back to the local mirror") { opts[:no_local] = true }
+end.parse!
+
+arg = ARGV[0]
+unless arg
+  warn "usage: blossom-get <sha256|blossom-url>"
+  exit 1
+end
+
+# bare sha256, or a blossom URL whose path carries it (extension tolerated)
+sha = if arg.match?(/\A[0-9a-f]{64}\z/)
+        arg
+      else
+        seg = URI.parse(arg).path.to_s.split("/").delete_if(&:empty?).last.to_s
+        seg[/\A[0-9a-f]{64}/] or abort "blossom-get: no sha256 in #{arg}"
+      end
+
+order = (opts[:servers] + DEFAULT_SERVERS).uniq
+order << opts[:local] unless opts[:no_local]
+
+result = Nostrd::Blossom::Client.get(order, "/#{sha}")
+abort "blossom-get: not found on #{order.size} source(s): #{sha}" unless result
+
+body, ct = result
+if opts[:out]
+  File.binwrite(opts[:out], body)
+  warn "#{sha[0, 16]}… -> #{opts[:out]} (#{body.bytesize} bytes, #{ct})"
+else
+  $stdout.binmode
+  print body
+end

@@ -26,6 +26,7 @@ require "base64"
 require "uri"
 require "socket"
 require "optparse"
+require_relative "../lib/nostrd/blossom"
 
 # extension -> content-type (keep minimal; unknown files upload as
 # application/octet-stream, which some servers reject)
@@ -45,6 +46,11 @@ DEFAULT_SERVERS = %w[
   https://cdn.nostrcheck.me
   https://blossom.primal.net
 ].freeze
+
+# The embedded blossom takes a mirror copy of every uploaded blob: the
+# private restore source when public servers disappear. Its loopback URL
+# never reaches manifest server tags (Client.loopback? filters them).
+LOCAL_BLOSSOM = "http://127.0.0.1:7778"
 
 # NIP-5A host gateways that exist today. They resolve nsites by watching
 # relays for manifest events; a fresh publish can take a bit to appear.
@@ -94,17 +100,9 @@ def sign_auth(socket_path, url, method:, x: nil)
 end
 
 def upload(socket_path, server, sha, data, mime)
-  uri = URI("#{server}/upload")
-  auth = sign_auth(socket_path, uri.to_s, method: "PUT", x: sha)
-  req = Net::HTTP::Put.new(uri)
-  req.body = data
-  req["Authorization"] = "Nostr #{Base64.strict_encode64(JSON.generate(auth))}"
-  req["Content-Type"] = mime
-  res = Net::HTTP.start(uri.host, uri.port, use_ssl: true, open_timeout: 8,
-                        read_timeout: 30) { |http| http.request(req) }
-  [res.code.to_i.between?(200, 299), "#{res.code} #{res.body.to_s[0, 60].gsub(/\s+/, ' ')}"]
-rescue StandardError => e
-  [false, "ERR #{e.class}"]
+  auth = sign_auth(socket_path, "#{server}/upload", method: "PUT", x: sha)
+  Nostrd::Blossom::Client.put(server, "/upload", body: data, mime: mime,
+                              auth: "Nostr #{Base64.strict_encode64(JSON.generate(auth))}")
 end
 
 # Rebroadcast an already-signed event to one relay, verbatim. Returns
@@ -171,6 +169,9 @@ OptionParser.new do |o|
   o.on("--title TITLE") { |v| opts[:title] = v }
   o.on("--desc DESC") { |v| opts[:desc] = v }
   o.on("--server URL", "extra blossom server (repeatable)") { |v| opts[:servers] << v }
+  o.on("--no-local-mirror", "skip mirroring blobs to the embedded blossom (127.0.0.1:7778)") do
+    opts[:no_local_mirror] = true
+  end
   o.on("--gateway-relay URL", "extra relay to rebroadcast the manifest to (repeatable/comma-sep)") do |v|
     (opts[:gateway_relays] ||= []).concat(v.split(","))
   end
@@ -194,11 +195,17 @@ blobs = paths.map do |rel, abs|
 end
 
 # 2. upload (best effort per server; one success per blob is enough — GETs
-# are anonymous and content-addressed)
+# are anonymous and content-addressed). The embedded blossom takes a mirror
+# copy FIRST: even an aborted run leaves restorable copies locally, and its
+# loopback URL is filtered out of the manifest's server tags.
 servers = (DEFAULT_SERVERS + opts[:servers]).uniq
 ok_servers = []
 blobs.each do |rel, sha, data, mime|
   mime ||= "application/octet-stream"
+  unless opts[:no_local_mirror]
+    ok, info = upload(opts[:socket], LOCAL_BLOSSOM, sha, data, mime)
+    warn "  #{rel} -> local mirror failed (#{info})" unless ok
+  end
   uploaded = []
   servers.each do |server|
     ok, info = upload(opts[:socket], server, sha, data, mime)
@@ -206,8 +213,8 @@ blobs.each do |rel, sha, data, mime|
     puts "  #{rel} -> #{File.basename(URI(server).host)}: #{info}" if ok || uploaded.empty?
     break if ok && uploaded.size >= 2 # two healthy copies per blob
   end
-  ok_servers |= uploaded
-  die "no server accepted #{rel} (#{sha})" if uploaded.empty?
+  ok_servers |= uploaded.reject { |s| Nostrd::Blossom::Client.loopback?(s) }
+  die "no server accepted #{rel} (#{sha}) — a local mirror copy was kept" if uploaded.empty?
 end
 
 # 3. manifest: kind 35128 with path/x/server tags (NIP-5A)

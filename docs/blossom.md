@@ -6,6 +6,29 @@ nostrd 起動時に内蔵 Blossom サーバが立ちます(停止: `nostrd --blo
 - 保存先: `~/.local/share/nostrd/blobs/<sha256上位2桁>/<残り>`
 - 認証: NIP-98 (kind 24242, `t` = action, `x` = sha256)。
 
+## ローカル = プライベートミラー（バックアップ構成）
+
+公開 Blossom が消えてもデータを失わない構成。**10063 に載せるのは公開サーバだけ**。
+
+```
+アップロード: 公開サーバ群 + ローカル 7778 に同時ミラー
+  (nostr-nsite はミラーを先に書く — 途中で止まっても復旧可能)
+取得: blossom-get  公開 → (404/タイムアウト) → ローカル
+復旧: ローカルの同一 sha256 を新しい公開サーバへ再アップロードするだけ
+```
+
+```bash
+# 取得(フォールバック付き): -o で保存、無指定なら stdout
+nostrd/bin/blossom-get <sha256|blossom-url> -o FILE
+
+# ローカルミラーをスキップ / ソース追加
+nostrd/bin/blossom-get <sha> --no-local
+nostrd/bin/blossom-get <sha> --server https://my.blossom.example
+```
+
+- nostr-nsite はデフォルトでローカルミラーを先に書く(`--no-local-mirror` で無効)
+- ループバック URL は `Blossom::Client.loopback?` で manifest の server タグから除外される
+
 ## アップロード (PUT /upload)
 
 認証ヘッダの流れ:
