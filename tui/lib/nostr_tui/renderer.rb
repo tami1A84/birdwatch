@@ -29,8 +29,8 @@ module NostrTui
     # Reading measure: the feed column never exceeds this (centered on wider
     # terminals — a full-bleed card row on a 150-col screen reads as a void).
     CONTENT_MAX = 84
-    # SSS header tabs (h/l, ←/→, 1-4).
-    TABS = ["ホーム", "フォロー", "リレー", "設定"].freeze
+    # SSS header tabs (h/l, ←/→, 1-5).
+    TABS = ["ホーム", "フォロー", "リレー", "チャット", "設定"].freeze
 
     # Per-tab status-bar hints (indexed by tab): the relays tab surfaces its
     # own editing keys, follows swaps like/reply for the profile opener.
@@ -38,6 +38,7 @@ module NostrTui
       "h/l tabs · j/k move · g/G ends · L like · / search · n post · r reply · y yank · o open · q quit",
       "h/l tabs · j/k move · g/G ends · o profile · q quit",
       "R/I/W/O/D/S switch · a add · x remove · A advertise · h/l tabs · q quit",
+      "Enter open/close · m send · h/l tabs · q quit",
       "e profile · o QR · s logout · u unlock · i import · h/l tabs · q quit"
     ].freeze
 

@@ -15,6 +15,7 @@ module NostrTui
       "1" => :tab1, "2" => :tab2, "3" => :tab3, "4" => :tab4,
       :pgup => :page_up, :pgdn => :page_down,
       "/" => :search, "r" => :reply, "n" => :compose,
+      "m" => :chat_send, "\r" => :chat_open, # chat tab: send / open-close thread
       "L" => :like, # NIP-25 reaction on the selected note
       "R" => :relay_read, "I" => :relay_inbox, "W" => :relay_write,
       "O" => :relay_outbox, "D" => :relay_discover, "S" => :relay_search,
@@ -23,7 +24,7 @@ module NostrTui
       "i" => :import_key, "u" => :unlock,
       "q" => :quit, 27 => :quit # ESC
     }.freeze
-    NOUNS = %w[notes follows relays items].freeze
+    NOUNS = %w[notes follows relays dms items].freeze
     GITHUB_URL = "https://github.com/tami1A84/birdwatch" # settings: birdwatch row + o
 
     # curses color pairs (cyan accent on the default bg; every pair — PANEL
@@ -50,6 +51,12 @@ module NostrTui
       @modal = nil        # NIP-46 connect QR overlay (hash: uri/qr/width)
       @connect_pending = false
       @bunker_uri = nil
+      @chat_partner = nil # nil = conversation list; pubkey = open thread
+      @chat_convs = []    # [{pubkey, last, count}] from the dms channel
+      @chat_msgs = []     # open thread's kind-14 rumors, oldest first
+      @chat_fetch = nil   # sub id of the in-flight dms fetch
+      @dm_seq = 0
+      @reconnect_at = nil # throttle for the dead-socket redial loop
       @screen_live = false # run() flips this once curses owns a real screen
     end
 
@@ -57,7 +64,18 @@ module NostrTui
     # The curses loop lives in App#run (needs a real TTY).
     def drain(message)
       case message["ev"]
-      when "event" then @timeline.add_h(message["event"])
+      when "event"
+        # dms-channel event frames carry the fetch's sub id; route them to
+        # the open thread instead of the home timeline (kind-14 rumors are
+        # DM content, not feed notes).
+        if message["sub"].to_s.start_with?("dms_") && message["sub"] == @chat_fetch
+          @chat_msgs << message["event"] if @chat_partner && message["event"]
+          @chat_msgs.sort_by! { |r| r["created_at"].to_i }
+        else
+          @timeline.add_h(message["event"])
+        end
+      when "conversations"
+        @chat_convs = message["conversations"] || [] if message["sub"] == @chat_fetch
       when "profiles" then @timeline.apply_profiles(message["profiles"] || [])
       when "info"
         @info = { "follows" => message["follows"] || [],
@@ -71,9 +89,14 @@ module NostrTui
         @timeline.apply_profiles(message["profiles"] || [])
       when "eod", "ack"
         # bunker_secret failures arrive as ack(ok:false) with the bsec_ id.
-        if message["ev"] == "ack" && !message["ok"] && message["id"].to_s.start_with?("bsec_")
-          @connect_pending = false
-          flash("bunker URI: #{message['error']}")
+        if message["ev"] == "ack"
+          if !message["ok"] && message["id"].to_s.start_with?("bsec_")
+            @connect_pending = false
+            flash("bunker URI: #{message['error']}")
+          elsif message["id"].to_s.start_with?("dmsend_")
+            # Our rumor is stored daemon-side; pull the refreshed thread.
+            message["ok"] ? refresh_chat : flash("send failed: #{message['error']}")
+          end
         end
         true
       when "result"
@@ -124,6 +147,7 @@ module NostrTui
       @first_visible = 0
       @selected_id = nil
       @client&.request_info
+      refresh_chat if @tab == 3 # chat: re-pull list or the open thread
     end
 
     # --- curses (requires a TTY and the curses gem) ---
@@ -193,10 +217,11 @@ module NostrTui
         when :tab2 then set_tab(1)
         when :tab3 then set_tab(2)
         when :tab4 then set_tab(3)
+        when :tab5 then set_tab(4)
         when :page_up then move(-page_step)
         when :page_down then move(page_step)
         when :yank then yank
-        when :open then @tab == 3 ? settings_action('o', client) : open_link
+        when :open then @tab == 4 ? settings_action('o', client) : open_link
         when :search
           if @tab.zero?
             q = ask_line("search: ")
@@ -213,6 +238,8 @@ module NostrTui
              :relay_discover, :relay_search, :relay_add, :relay_remove,
              :relay_advertise
           relay_command(action, client)
+        when :chat_open then chat_enter(client)
+        when :chat_send then chat_compose(client)
         end
       end
     ensure
@@ -342,12 +369,25 @@ module NostrTui
     def drain_socket(client)
       return unless client
 
+      retry_reconnect(client) # a daemon restart must not strand the session
       while client.messages.length.positive?
         msg = client.messages.shift(true) rescue break
         next if msg.nil?
 
         drain(msg)
       end
+    end
+
+    # Dead-socket redial, throttled to one attempt per 2s. client#reconnect
+    # replays hello + timeline + info, so the view refills on its own.
+    def retry_reconnect(client)
+      return if client.connected?
+
+      now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      return if @reconnect_at && now - @reconnect_at < 2
+
+      @reconnect_at = now
+      flash("reconnected to nostrd") if client.reconnect
     end
 
     # Anchor selection to the note, not the row: live arrivals must not drag it.
@@ -411,7 +451,8 @@ module NostrTui
       case @tab
       when 1 then follows_items
       when 2 then relays_items
-      when 3 then settings_items
+      when 3 then chat_items
+      when 4 then settings_items
       else []
       end
     end
@@ -458,6 +499,7 @@ module NostrTui
       case @tab
       when 1 then "no follows yet"
       when 2 then "no relays connected"
+      when 3 then @chat_partner ? "no messages yet — m to write" : "no conversations yet — DMs land here"
       else "no notes yet — start nostrd or press n to post"
       end
     end
@@ -519,6 +561,73 @@ module NostrTui
     # NIP-25 like on the selected note; the daemon signs kind 7.
     # Settings tab: row-keyed actions — e/o/s/u/i act on the SELECTED row
     # (j/k to move). Keys mean nothing until a row is selected.
+    # --- chat tab: NIP-17 DMs ---
+
+    # Rows swap with mode: partner list (pubkey per row) or the open thread
+    # (direction in the label; rumors only — no relay metadata involved).
+    def chat_items
+      if @chat_partner
+        me = @info["me"].to_s
+        @chat_msgs.map do |r|
+          { label: r["pubkey"] == me ? "me" : chat_partner_name(r["pubkey"].to_s),
+            sub: r["content"].to_s, right: chat_time(r["created_at"]) }
+        end
+      else
+        @chat_convs.map do |c|
+          { label: chat_partner_name(c["pubkey"].to_s),
+            sub: (c["last"] || {})["content"].to_s,
+            right: c["count"].to_s, pubkey: c["pubkey"] }
+        end
+      end
+    end
+
+    def chat_partner_name(pk)
+      p = @timeline.profile_for(pk) || {}
+      p["display_name"] || p["name"] || "#{pk[0, 8]}…"
+    end
+
+    def chat_time(ts)
+      Time.at(ts.to_i).strftime("%m/%d %H:%M")
+    rescue RangeError, TypeError
+      ""
+    end
+
+    # The dms fetch rides its own sub so replies route back here (drain).
+    def refresh_chat
+      @dm_seq += 1
+      @chat_fetch = "dms_#{@dm_seq}"
+      @chat_msgs = [] if @chat_partner # stale rows out during refetch
+      @client&.dms(partner: @chat_partner, limit: 50, sub: @chat_fetch)
+    end
+
+    # Enter toggles list ↔ open thread.
+    def chat_enter(_client)
+      return flash("chat tab only") unless @tab == 3
+
+      if @chat_partner
+        @chat_partner = nil
+      else
+        item = chat_items[@selected]
+        return flash("no conversation selected") unless item && item[:pubkey]
+
+        @chat_partner = item[:pubkey]
+      end
+      @selected = 0
+      @first_visible = 0
+      refresh_chat
+    end
+
+    # m in an open thread: compose, then the daemon seals/wraps/publishes.
+    # The ack (dmsend_ id) triggers the refetch that shows our own message.
+    def chat_compose(_client)
+      return flash("open a thread first (Enter)") unless @tab == 3 && @chat_partner
+
+      text = ask_line("message: ")
+      return if text.nil? || text.empty? # ESC = cancel
+
+      @client&.send_dm(@chat_partner, text) ? flash("sending…") : flash("offline?")
+    end
+
     def settings_action(key, client)
       row = list_items[@selected]
       case [key, row && row[:label]]

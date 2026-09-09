@@ -5,6 +5,7 @@ require_relative "../lib/nostr_tui/ndjson"
 require_relative "../lib/nostr_tui/timeline"
 require_relative "../lib/nostr_tui/renderer"
 require_relative "../lib/nostr_tui/app"
+require_relative "../lib/nostr_tui/socket_client"
 
 class TuiTest < Minitest::Test
   def test_ndjson_roundtrip_and_bad_lines
@@ -254,10 +255,10 @@ class TuiTest < Minitest::Test
     assert_equal "a@zaps.lol", follows.first[:sub]
     app.set_tab(2)
     assert_equal "wss://r.example", app.send(:list_items).first[:label]
-    app.set_tab(3)
+    app.set_tab(4)
     assert app.send(:list_items).first[:label].include?("birdwatch")
     app.set_tab(-1) # wraps to the last tab
-    assert_equal 3, app.instance_variable_get(:@tab)
+    assert_equal 4, app.instance_variable_get(:@tab)
     app.set_tab(0)
     assert_nil app.selected_event # home is empty here
     assert_equal 0, app.instance_variable_get(:@selected)
@@ -632,7 +633,7 @@ class TuiTest < Minitest::Test
   # goes out and the row-keyed routing picks the connect row only.
   def test_open_on_settings_tab_requests_bunker_uri
     app = NostrTui::App.new(timeline: NostrTui::Timeline.new)
-    app.instance_variable_set(:@tab, 3)
+    app.instance_variable_set(:@tab, 4) # settings moved behind chat
     sent = []
     client = Object.new
     client.define_singleton_method(:bunker_secret) { sent << :bsec }
@@ -660,7 +661,7 @@ class TuiTest < Minitest::Test
   # Settings actions are ROW-keyed: e/o/s/u/i act on the selected row only.
   def test_settings_actions_are_row_keyed
     app = NostrTui::App.new(timeline: NostrTui::Timeline.new)
-    app.instance_variable_set(:@tab, 3)
+    app.instance_variable_set(:@tab, 4) # settings moved behind chat
     app.instance_variable_set(:@selected, 1) # profile row
     edited = []
     app.define_singleton_method(:profile_edit) { |c| edited << c }
@@ -794,5 +795,116 @@ class TuiTest < Minitest::Test
     app.send(:request_connect_qr, nil)
     assert_equal false, app.instance_variable_get(:@connect_pending)
     assert_equal "daemon に接続できません", app.instance_variable_get(:@flash)
+  end
+
+  # --- chat tab (NIP-17 DMs) ---
+
+  def test_chat_conversations_frame_populates_chat_rows
+    app = NostrTui::App.new(timeline: NostrTui::Timeline.new)
+    app.drain({ "ev" => "info", "follows" => [], "relays" => [],
+                "me" => "aa" * 32, "profiles" => [{ "pubkey" => "bb" * 32, "name" => "Bob" }] })
+    app.set_tab(3) # first fetch: dms_1, no client attached (no-op)
+    app.drain({ "ev" => "conversations", "sub" => "dms_1",
+                "conversations" => [{ "pubkey" => "bb" * 32, "count" => 2,
+                                      "last" => { "content" => "hello", "created_at" => 1_700_000_000 } }] })
+    rows = app.send(:list_items)
+    assert_equal "Bob", rows.first[:label]     # profile-resolved partner
+    assert_equal "hello", rows.first[:sub]     # newest message preview
+    assert_equal "2", rows.first[:right]       # message count
+    assert_equal "bb" * 32, rows.first[:pubkey]
+  end
+
+  def test_chat_thread_routes_dm_events_and_marks_direction
+    app = NostrTui::App.new(timeline: NostrTui::Timeline.new)
+    me = "aa" * 32
+    app.drain({ "ev" => "info", "follows" => [], "relays" => [], "me" => me,
+                "profiles" => [{ "pubkey" => "bb" * 32, "name" => "Bob" }] })
+    app.set_tab(3) # dms_1
+    app.drain({ "ev" => "conversations", "sub" => "dms_1",
+                "conversations" => [{ "pubkey" => "bb" * 32, "count" => 1,
+                                      "last" => { "content" => "hello", "created_at" => 10 } }] })
+    app.instance_variable_set(:@selected, 0)
+    app.send(:chat_enter, nil) # opens the thread, fetch rides dms_2
+    assert_equal "bb" * 32, app.instance_variable_get(:@chat_partner)
+    app.drain({ "ev" => "event", "sub" => "dms_2",
+                "event" => { "id" => "e1", "pubkey" => "bb" * 32, "kind" => 14,
+                             "content" => "hello", "created_at" => 10, "tags" => [] } })
+    app.drain({ "ev" => "event", "sub" => "dms_2",
+                "event" => { "id" => "e2", "pubkey" => me, "kind" => 14,
+                             "content" => "hi bob", "created_at" => 11, "tags" => [] } })
+    rows = app.send(:list_items)
+    assert_equal "Bob", rows[0][:label] # from the partner
+    assert_equal "me", rows[1][:label]  # from us
+    assert_equal "hi bob", rows[1][:sub]
+    assert_empty app.send(:visible_events) # dm frames never leak to the timeline
+    # a thread fetch never resolves with a partner unset: guard the routing
+    app.instance_variable_set(:@chat_partner, nil)
+    app.drain({ "ev" => "event", "sub" => "dms_2",
+                "event" => { "id" => "e3", "pubkey" => me, "kind" => 14,
+                             "content" => "late", "created_at" => 12, "tags" => [] } })
+    assert_equal 0, app.send(:visible_events).size
+  end
+
+  def test_chat_send_dm_and_ack_triggers_refetch
+    app = NostrTui::App.new(timeline: NostrTui::Timeline.new)
+    calls = []
+    client = Object.new
+    client.define_singleton_method(:send_dm) { |pk, text| calls << [:send, pk, text]; true }
+    client.define_singleton_method(:dms) { |**kw| calls << [:dms, kw[:partner]]; true }
+    app.attach(client)
+    app.instance_variable_set(:@tab, 3)
+    app.instance_variable_set(:@chat_partner, "bb" * 32)
+    app.define_singleton_method(:ask_line) { |_prompt| "もお" }
+    app.send(:chat_compose, client)
+    assert_equal [:send, "bb" * 32, "もお"], calls.first
+    n = calls.size
+    app.drain({ "ev" => "ack", "id" => "dmsend_1", "ok" => true, "event_id" => "e" * 64 })
+    assert_operator calls.size, :>, n # ack ok -> thread refetch
+    # failed send surfaces the daemon error instead of refetching
+    app.drain({ "ev" => "ack", "id" => "dmsend_2", "ok" => false, "error" => "boom" })
+    assert_equal "send failed: boom", app.instance_variable_get(:@flash)
+  end
+
+  def test_dead_socket_triggers_throttled_reconnect
+    app = NostrTui::App.new(timeline: NostrTui::Timeline.new)
+    attempts = 0
+    client = Object.new
+    client.define_singleton_method(:connected?) { false }
+    client.define_singleton_method(:messages) { Queue.new }
+    client.define_singleton_method(:reconnect) do
+      attempts += 1
+      true
+    end
+    app.send(:drain_socket, client)
+    assert_equal 1, attempts
+    app.send(:drain_socket, client)
+    assert_equal 1, attempts # <2s since the last try: throttled
+    app.instance_variable_set(:@reconnect_at,
+                              Process.clock_gettime(Process::CLOCK_MONOTONIC) - 3)
+    app.send(:drain_socket, client)
+    assert_equal 2, attempts
+  end
+
+  def test_socket_client_reconnect_replays_hello_sub_info
+    require "json"
+    require "socket"
+    require "fileutils"
+    path = File.join(Dir.tmpdir, "tui-reconnect-#{Process.pid}.sock")
+    FileUtils.rm_f(path)
+    serv = UNIXServer.new(path)
+    client = NostrTui::SocketClient.new(path)
+    assert client.connect
+    serv.accept.close # daemon session #1 dies (restart)
+    sleep 0.05
+    assert_equal false, client.send(:transmit, { "op" => "ping" }) # EPIPE -> dropped
+    refute client.connected?
+    assert client.reconnect
+    conn = serv.accept # session #2
+    ops = Array.new(3) { JSON.parse(conn.readline)["op"] }
+    assert_equal %w[hello sub info], ops # session replay
+    client.close
+    conn.close
+    serv.close
+    FileUtils.rm_f(path)
   end
 end

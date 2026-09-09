@@ -22,7 +22,7 @@ module NostrTui
       transmit(op: "hello", client: "tui", proto: 1)
       @reader = Thread.new do
         @sock.each_line { |line| @messages << Ndjson.parse(line) }
-      rescue IOError, Errno::EPIPE
+      rescue IOError, Errno::EPIPE, Errno::ECONNRESET, EOFError
         @messages << { "ev" => "error", "code" => "disconnected" }
       end
       true
@@ -102,6 +102,32 @@ module NostrTui
       transmit(op: "relay_remove", id: "rm_#{Time.now.to_i}", params: { url: url })
     end
 
+    # NIP-17 DM: the daemon wraps (kind 14 rumor → seal → gift) and publishes
+    # to the partner's inbox relays. The ack carries our event id.
+    def send_dm(pubkey, text)
+      transmit(op: "send_dm", id: "dmsend_#{Time.now.to_i}",
+               params: { pubkey: pubkey, text: text })
+    end
+
+    # Chat history over the dms channel: partner omitted = conversation list,
+    # present = that thread's kind-14 rumors. sub lets App#drain route the
+    # event frames (they share the generic "event" frame shape with timeline).
+    def dms(partner: nil, limit: 50, sub: "dms")
+      transmit(op: "sub", id: sub, channel: "dms",
+               params: { partner: partner, limit: limit })
+    end
+
+    # Re-establish the session after a daemon restart: the launcher's first
+    # connect does hello + timeline sub + info fetch, so replay all three.
+    def reconnect
+      close
+      return false unless connect
+
+      subscribe_timeline
+      request_info
+      true
+    end
+
     def close
       @reader&.kill
       @sock&.close
@@ -118,7 +144,8 @@ module NostrTui
 
       @sock.write(Ndjson.encode(message))
       true
-    rescue Errno::EPIPE
+    rescue Errno::EPIPE, IOError
+      @sock = nil # the socket died: connected? must stop claiming online
       false
     end
   end
