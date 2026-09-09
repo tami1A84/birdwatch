@@ -72,6 +72,19 @@ class RelayPoolTest < Minitest::Test
     assert_equal "ch9", frame[1]["tags"].assoc("challenge")[1]
   end
 
+  # "wss://r/" and "wss://r" are the same relay: one connection, one key,
+  # and the disconnect callback reports the canonical spelling.
+  def test_trailing_slash_variants_share_one_connection
+    @pool.connect("wss://r.example/")
+    @pool.connect("wss://r.example")
+    assert_equal 1, @pool.connections.size
+    assert @pool.connections.key?("wss://r.example")
+
+    @pool.connections["wss://r.example"].fire_close
+    assert_equal [["wss://r.example", 300]], @dropped
+    assert_empty @pool.connections
+  end
+
   def test_disconnect_feeds_penalty_box_hook
     @pool.connect("wss://r.example")
     @pool.connections["wss://r.example"].fire_close

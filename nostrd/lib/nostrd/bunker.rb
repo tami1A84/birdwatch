@@ -5,6 +5,7 @@ require "securerandom"
 require "uri"
 require_relative "nip46"
 require_relative "../nostr_core/nip44"
+require_relative "../nostr_core/relay"
 
 module Nostrd
   # NIP-46 bunker: persistent config (bunker.json) + kind-24133 relay
@@ -175,7 +176,11 @@ module Nostrd
     end
 
     # Configured bunker relays must be dialed even if gossip never picks them.
-    def relay_targets = enabled? ? @config.relays : []
+    def relay_targets
+      return [] unless enabled?
+
+      @config.relays.map { |u| NostrCore.normalize_relay_url(u) }
+    end
 
     # Inbound kind-24133 event -> encrypted request -> handler -> encrypted
     # response. Never raises: relay threads call this on arrival. url is the

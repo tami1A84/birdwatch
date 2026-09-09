@@ -1,6 +1,14 @@
 # frozen_string_literal: true
 
 module NostrCore
+  # Canonical wire form of a relay URL: trimmed, no trailing slash.
+  # The wild advertises "wss://x" and "wss://x/" interchangeably — one
+  # canonical key keeps the pool, the evidence store and the picker from
+  # dialing (and scoring) the same relay twice.
+  def self.normalize_relay_url(url)
+    url.to_s.strip.sub(%r{/+\z}, "")
+  end
+
   # A relay we know about. Ported from gossip's relay3.rs.
   class Relay
     attr_reader :url, :rank, :success_count, :successes

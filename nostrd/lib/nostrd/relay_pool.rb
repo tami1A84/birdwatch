@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "json"
+require_relative "../nostr_core/relay"
 require_relative "../nostr_core/subscription"
 
 module Nostrd
@@ -33,6 +34,7 @@ module Nostrd
     end
 
     def connect(url)
+      url = NostrCore.normalize_relay_url(url)
       return if @connections.key?(url)
 
       klass = @transport_class

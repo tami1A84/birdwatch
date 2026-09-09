@@ -64,25 +64,27 @@ module Nostrd
       @db.execute(
         "SELECT url, read, inbox, write, outbox, discover, search FROM my_relays ORDER BY url"
       ).map do |url, read, inbox, write, outbox, discover, search|
-        { "url" => url, "read" => read == 1, "inbox" => inbox == 1,
+        { "url" => NostrCore.normalize_relay_url(url), "read" => read == 1, "inbox" => inbox == 1,
           "write" => write == 1, "outbox" => outbox == 1, "discover" => discover == 1,
           "search" => search == 1 }
       end
     end
 
     def my_relay(url)
-      my_relays.find { |r| r["url"] == url }
+      my_relays.find { |r| r["url"] == NostrCore.normalize_relay_url(url) }
     end
 
     def upsert_my_relay(url, read:, inbox:, write:, outbox:, discover:, search: false)
       @db.execute(
         "INSERT OR REPLACE INTO my_relays VALUES (?,?,?,?,?,?,?)",
-        [url, read ? 1 : 0, inbox ? 1 : 0, write ? 1 : 0, outbox ? 1 : 0, discover ? 1 : 0,
-         search ? 1 : 0]
+        [NostrCore.normalize_relay_url(url), read ? 1 : 0, inbox ? 1 : 0, write ? 1 : 0,
+         outbox ? 1 : 0, discover ? 1 : 0, search ? 1 : 0]
       )
     end
 
-    def remove_my_relay(url) = @db.execute("DELETE FROM my_relays WHERE url = ?", [url])
+    def remove_my_relay(url)
+      @db.execute "DELETE FROM my_relays WHERE url = ?", [NostrCore.normalize_relay_url(url)]
+    end
 
     # --- follows (persisted; --follow args and socket `follow` land here) ---
     def save_follow(pubkey)
@@ -252,18 +254,21 @@ module Nostrd
     def upsert_relay(relay)
       @db.execute(
         "INSERT OR REPLACE INTO relays VALUES (?,?,?,?,?)",
-        [relay.url, relay.rank, relay.success_count, relay.successes, relay.connected? ? 1 : 0]
+        [NostrCore.normalize_relay_url(relay.url), relay.rank, relay.success_count,
+         relay.successes, relay.connected? ? 1 : 0]
       )
     end
 
     def relay(url)
       row = @db.execute(
-        "SELECT url, rank, success_count, successes, connected FROM relays WHERE url = ?", [url]
+        "SELECT url, rank, success_count, successes, connected FROM relays WHERE url = ?",
+        [NostrCore.normalize_relay_url(url)]
       ).first
       row && row_to_relay(row)
     end
 
     def record_relay_result(url, success:)
+      url = NostrCore.normalize_relay_url(url)
       @db.execute(
         "INSERT INTO relays(url) VALUES (?) ON CONFLICT(url) DO NOTHING", [url]
       )
@@ -281,8 +286,9 @@ module Nostrd
       tags.each do |tag|
         next unless tag.is_a?(Array) && tag[0] == "r"
 
-        url, marker = tag[1], tag[2]
-        next unless url.to_s.start_with?("ws")
+        url = NostrCore.normalize_relay_url(tag[1])
+        marker = tag[2]
+        next unless url.start_with?("ws")
 
         write = marker.nil? || marker == "w" ? 1 : 0
         read = marker.nil? || marker == "r" ? 1 : 0
@@ -295,6 +301,7 @@ module Nostrd
 
     # Empirical evidence: we fetched this person's events from this relay.
     def record_fetch(url, pubkey, now)
+      url = NostrCore.normalize_relay_url(url)
       @db.execute(
         "INSERT OR IGNORE INTO person_relays VALUES (?,?,?,?,?,?,?)",
         [pubkey, url, 0, 0, nil, nil, nil]
@@ -313,12 +320,16 @@ module Nostrd
     def upsert_person_relay(pubkey, pr)
       @db.execute(
         "INSERT OR REPLACE INTO person_relays VALUES (?,?,?,?,?,?)",
-        [pubkey, pr.url, pr.write ? 1 : 0, pr.read ? 1 : 0, pr.last_fetched, pr.last_suggested]
+        [pubkey, NostrCore.normalize_relay_url(pr.url), pr.write ? 1 : 0, pr.read ? 1 : 0,
+         pr.last_fetched, pr.last_suggested]
       )
     end
 
     # Best relays for one person, scored gossip-style:
     # association_score(person, relay) × relay.adjusted_score. Sorted desc.
+    # Rows collapse onto the canonical (trailing-slash-free) url and their
+    # evidence unions: legacy stores hold both spellings, and treating them
+    # as two relays double-counted claims and dialed the relay twice.
     def best_relays_for(pubkey, usage: :outbox, now: Time.now.to_i)
       pr_rows = @db.execute(
         "SELECT url, write, read, last_fetched, last_suggested FROM person_relays WHERE pubkey = ?",
@@ -331,14 +342,24 @@ module Nostrd
       relays = @db.execute(
         "SELECT url, rank, success_count, successes, connected FROM relays " \
         "WHERE url IN (#{placeholders})", relay_urls
-      ).to_h { |r| [r[0], row_to_relay(r)] }
+      ).to_h { |r| [NostrCore.normalize_relay_url(r[0]), row_to_relay(r)] }
 
-      pr_rows.filter_map do |url, write, read, lf, ls|
-        next unless (relay = relays[url])
+      merged = {}
+      pr_rows.each do |url, write, read, lf, ls|
+        key = NostrCore.normalize_relay_url(url)
+        next unless (relay = relays[key])
 
-        pr = NostrCore::PersonRelay.new(url: url, write: write == 1, read: read == 1,
-                                        last_fetched: lf, last_suggested: ls)
-        [url, pr.association_score(now: now, usage: usage) * relay.adjusted_score]
+        slot = (merged[key] ||= { relay: relay, write: 0, read: 0, last_fetched: nil, last_suggested: nil })
+        slot[:write] = 1 if write == 1
+        slot[:read] = 1 if read == 1
+        slot[:last_fetched] = lf if lf && (!slot[:last_fetched] || lf > slot[:last_fetched])
+        slot[:last_suggested] = ls if ls && (!slot[:last_suggested] || ls > slot[:last_suggested])
+      end
+
+      merged.filter_map do |url, e|
+        pr = NostrCore::PersonRelay.new(url: url, write: e[:write] == 1, read: e[:read] == 1,
+                                        last_fetched: e[:last_fetched], last_suggested: e[:last_suggested])
+        [url, pr.association_score(now: now, usage: usage) * e[:relay].adjusted_score]
       end.sort_by { |_, s| -s }
     end
 
