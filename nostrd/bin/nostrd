@@ -161,6 +161,7 @@ if options[:live]
   require_relative "../lib/nostrd/relay_pool"
   require_relative "../lib/nostrd/orchestrator"
   require_relative "../lib/nostrd/live_feed"
+  require_relative "../lib/nostrd/dm"
 
   server = nil # assigned below; lambdas broadcast through it
   # Live home feed gate. Own signed events arrive with symbol keys, relay
