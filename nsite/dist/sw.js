@@ -1,8 +1,12 @@
-// birdwatch static shell — app files cache-first, navigations network-first.
-// Navigations (the HTML) go to the network first so an update ships on the
-// next app open; the cached copy is the offline fallback. Everything else is
-// cache-first with a version bump to force a refresh.
-const CACHE = 'bw-shell-v14'
+// birdwatch static shell — navigations network-first, app code stale-while-revalidate.
+// Navigations (the HTML) go to the network first so an update ships on the next
+// app open. app.js / style.css answer from cache instantly and revalidate against
+// the network in the background, so a publish lands on the next launch without
+// editing this file (nsite.lol caches each path for up to 1h, so expect at most
+// that much lag). Icons/fonts are effectively immutable: cache-first.
+// Bump CACHE only when a bad build must be evicted from clients at once.
+const CACHE = 'bw-shell-v16'
+const APP_FILES = ['/app.js', '/style.css']
 const ASSETS = ['./', './app.js', './style.css', './manifest.webmanifest',
                 './icon-64.png', './icon-192.png', './icon-512.png',
                 './favicon.ico',
@@ -25,6 +29,20 @@ self.addEventListener('fetch', (e) => {
         caches.open(CACHE).then((c) => c.put(e.request, copy))
         return res
       }).catch(() => caches.match('./')))
+    return
+  }
+  if (APP_FILES.includes(new URL(e.request.url).pathname)) {
+    e.respondWith(
+      caches.match(e.request).then((hit) => {
+        const refresh = fetch(e.request).then((res) => {
+          if (res && res.ok) {
+            const copy = res.clone()
+            caches.open(CACHE).then((c) => c.put(e.request, copy))
+          }
+          return res
+        }).catch(() => hit)
+        return hit || refresh
+      }))
     return
   }
   e.respondWith(
