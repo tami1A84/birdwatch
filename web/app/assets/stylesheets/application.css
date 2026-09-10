@@ -391,6 +391,21 @@ md-fab {
   overflow-wrap: anywhere;
 }
 
+/* photos in notes: lazy-loaded, rounded corners, linked to the original */
+.note-media {
+  display: block;
+  margin-top: 6px;
+  text-decoration: none;
+}
+span.note-media { display: block; }
+.note-image {
+  display: block;
+  max-width: 100%;
+  max-height: 340px;
+  border-radius: 12px;
+  background: var(--md-sys-color-surface-container-high);
+}
+
 /* detail: roomier body, no divider under the focused note */
 .tl-item--detail { border-bottom: 0; padding: 16px 0 8px; }
 .tl-item__body--detail { font-size: 17px; line-height: 1.5; margin-top: 6px; }
@@ -409,7 +424,8 @@ md-fab {
   border-top: 1px solid var(--md-sys-color-surface-container-highest);
 }
 
-/* avatars: kind-0 picture in a circle, account_circle fallback */
+/* avatars: kind-0 picture in a rounded square (--radius-md = 12px, the same
+   corners as .note-image), person fallback */
 .avatar {
   position: relative;
   display: inline-flex;
@@ -417,7 +433,7 @@ md-fab {
   justify-content: center;
   overflow: hidden;
   flex: 0 0 auto;
-  border-radius: 50%;
+  border-radius: var(--radius-md);
   background: var(--md-sys-color-surface-container-high);
   color: var(--md-sys-color-on-surface-variant);
 }
@@ -531,6 +547,23 @@ md-fab {
 }
 
 .compose-textarea--compact { font-size: 16px; }
+
+/* photo attach row: quiet icon + hint, native picker on tap */
+.compose-image {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  font-size: 13px;
+  color: var(--md-sys-color-on-surface-variant);
+  cursor: pointer;
+}
+.compose-image .msr { font-size: 20px; }
+.compose-image input[type="file"] {
+  max-width: 100%;
+  font-size: 12px;
+  color: inherit;
+}
 
 /* ------------------------------------------------------------ FAB / nav */
 
@@ -660,6 +693,24 @@ md-fab {
 .unfollow-button {
   --md-icon-button-icon-color: var(--md-sys-color-error);
 }
+
+/* section labels, TUI-style: terse, no explanation text */
+.relay-section {
+  margin: 18px 4px 6px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+/* discovered (gossip) rows are display-only: url + state */
+.relay-row--read {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+}
+.relay-row--read .relay-row__url { flex: 1 1 auto; }
 
 .relay-row {
   position: relative;

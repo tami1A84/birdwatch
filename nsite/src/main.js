@@ -178,19 +178,27 @@ function noteCard(ev) {
   const card = document.createElement('article')
   card.className = 'tl-item'
 
-  const avatar = document.createElement('img')
-  avatar.className = 'avatar--lg'
-  avatar.alt = ''
-  avatar.loading = 'lazy'
-  if (p.picture) {
-    avatar.src = p.picture
-    avatar.onerror = () => { avatar.style.visibility = 'hidden' }
-  } else {
-    avatar.style.visibility = 'hidden'
-  }
+  // avatar rides the .avatar clip (rounded square, --radius-md) like the
+  // Rails app — a bare <img class="avatar--lg"> rendered square.
   const av = document.createElement('span')
   av.className = 'tl-item__avatar'
-  av.appendChild(avatar)
+  const box = document.createElement('span')
+  box.className = 'avatar avatar--lg'
+  const fallback = document.createElement('span')
+  fallback.className = 'msr msr--outline avatar__fallback'
+  fallback.textContent = 'person'
+  box.appendChild(fallback)
+  if (p.picture) {
+    const avatar = document.createElement('img')
+    avatar.alt = ''
+    avatar.loading = 'lazy'
+    avatar.decoding = 'async'
+    avatar.referrerPolicy = 'no-referrer'
+    avatar.onerror = () => { avatar.remove() } // -> fallback icon returns
+    avatar.src = p.picture
+    box.appendChild(avatar)
+  }
+  av.appendChild(box)
 
   const main = document.createElement('span')
   main.className = 'tl-item__main'

@@ -444,7 +444,8 @@ span.note-media { display: block; }
   border-top: 1px solid var(--md-sys-color-surface-container-highest);
 }
 
-/* avatars: kind-0 picture in a circle, account_circle fallback */
+/* avatars: kind-0 picture in a rounded square (--radius-md = 12px, the same
+   corners as .note-image), person fallback */
 .avatar {
   position: relative;
   display: inline-flex;
@@ -452,7 +453,7 @@ span.note-media { display: block; }
   justify-content: center;
   overflow: hidden;
   flex: 0 0 auto;
-  border-radius: 50%;
+  border-radius: var(--radius-md);
   background: var(--md-sys-color-surface-container-high);
   color: var(--md-sys-color-on-surface-variant);
 }
@@ -1047,7 +1048,7 @@ html:active-view-transition-type(back)::view-transition-new(root) {
   }
 }
 
-    </style>
+</style>
   <!-- LINE Seed JP (official seed.line.me web fonts, OFL): fetch early but
        low-priority so app.js always wins the bandwidth race on first visit. -->
   <link rel="preload" href="./line-seed-jp-regular.woff2" as="font" type="font/woff2" crossorigin fetchpriority="low">

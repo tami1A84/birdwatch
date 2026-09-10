@@ -85,7 +85,7 @@ document.querySelectorAll("[data-fav-toggle]").forEach((btn) => {
   btn.dataset.fav = isFavorite(btn.dataset.favToggle) ? "1" : "0";
 });
 
-// broken avatar images → account_circle fallback (capture phase: error
+// broken avatar images → person fallback (capture phase: error
 // doesn't bubble)
 document.addEventListener("error", (e) => {
   const img = e.target;
