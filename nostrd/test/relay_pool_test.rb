@@ -92,6 +92,52 @@ class RelayPoolTest < Minitest::Test
     assert_empty @pool.connections
   end
 
+  # One url, one dial — even when dial threads race (tick + relay_failed +
+  # boot all call connect concurrently). The old check-then-dial race let
+  # both threads through and leaked a live duplicate socket per collision
+  # (boot logs showed the same relay "connected" twice in one boot).
+  def test_concurrent_connect_dials_once
+    dialed = Queue.new
+    release = Queue.new
+    klass = Class.new(StubTransport) do
+      define_method(:open) do
+        dialed << url
+        release.pop # block mid-handshake to widen the race window
+        true
+      end
+    end
+    pool = Nostrd::RelayPool.new(transport_class: klass,
+                                 on_event: ->(*) {}, on_disconnect: ->(*_a) {})
+
+    t1 = Thread.new { pool.connect("wss://r.example") }
+    sleep 0.05 # t1 has claimed the url and is blocked inside open
+    assert_nil pool.connect("wss://r.example"), "second dial is skipped, not duplicated"
+    release << true
+    assert_equal "wss://r.example", t1.value
+    assert_equal 1, dialed.size, "exactly one dial happened"
+    assert_equal 1, pool.connections.size
+  end
+
+  # The loopback home REQ carries `since` (boot time): replaying our own
+  # store back into ourselves is pure churn — live push needs no history.
+  def test_subscribe_home_since_bounds_replay
+    @pool.connect("wss://r.example")
+    @pool.subscribe_home("wss://r.example", "home", %w[pk], since: 1_700_000_000)
+    frame = JSON.parse(@pool.connections["wss://r.example"].sent.last)
+    assert_equal 1_700_000_000, frame[2]["since"]
+    assert_equal [1, 7, 1111], frame[2]["kinds"]
+    refute frame[2].key?("limit")
+  end
+
+  def test_subscribe_bunker_since_bounds_replay
+    @pool.connect("wss://r.example")
+    @pool.subscribe_bunker("wss://r.example", "bunker", "pk", since: 1_700_000_000)
+    frame = JSON.parse(@pool.connections["wss://r.example"].sent.last)
+    assert_equal 1_700_000_000, frame[2]["since"], "no days-deep kind-24133 replay on (re)connect"
+    assert_equal [24133], frame[2]["kinds"]
+    assert_equal ["pk"], frame[2]["#p"]
+  end
+
   # One-shot seeks are finished once the relay reports EOSE: the pool CLOSEs
   # them per relay (fan-out sends the same sub_id to several relays, each one
   # closes independently). Stream subscriptions (subscribe_person) stay open.

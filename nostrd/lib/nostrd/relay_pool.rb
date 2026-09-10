@@ -21,6 +21,8 @@ module Nostrd
       @max_subs = max_subs_per_conn # politeness: relays throttle concurrent REQs
       @logger = logger
       @connections = {} # url => transport
+      @connecting = []  # urls mid-handshake: two threads must never dial one url
+      @mos = Mutex.new  # guards @connections + @connecting (dial/closer threads race)
       @one_shot = {} # url => [sub_ids] — seeks are done after their EOSE
       @live_subs = {} # url => [sub_ids] — REQs actually sent (occupy a slot)
       @queued = {} # url => [[sub_id, frame, one_shot?]] — waiting for a slot
@@ -33,9 +35,19 @@ module Nostrd
       @auth = block
     end
 
+    # One url, one connection — always. The dial (blocking handshake, up to
+    # HANDSHAKE_TIMEOUT) happens OUTSIDE @mos so a dead relay cannot stall
+    # closes, but the check-and-claim of the url is atomic: tick threads,
+    # relay_failed threads and the boot dials all race here, and the old
+    # last-write-wins behaviour leaked a live duplicate socket per collision
+    # (logs showed the same relay "connected" twice in a single boot).
     def connect(url)
       url = NostrCore.normalize_relay_url(url)
-      return if @connections.key?(url)
+      @mos.synchronize do
+        return nil if @connections.key?(url) || @connecting.include?(url)
+
+        @connecting << url
+      end
 
       klass = @transport_class
       unless klass
@@ -43,13 +55,28 @@ module Nostrd
         klass = Nostrd::WsTransport  # v2: single mux reader thread for all conns
       end
       transport = klass.new(url)
-      transport.on_message { |data| handle_frame(url, data) }
-      transport.on_close { drop(url, penalty: true) }
-      transport.open
-      @connections[url] = transport
-      @logger.puts "pool: connected #{url}"
+      transport.open # blocking handshake; raises if the relay is dead
+      won = false
+      @mos.synchronize do
+        @connecting.delete(url)
+        unless @connections.key?(url)
+          # Callbacks registered only once we own the slot: a loser
+          # transport's close must not fire on_close and drop the winner's
+          # connection. (Unreachable while the claim above holds — insurance.)
+          transport.on_message { |data| handle_frame(url, data) }
+          transport.on_close { drop(url, penalty: true) }
+          @connections[url] = transport
+          won = true
+        end
+      end
+      if won
+        @logger.puts "pool: connected #{url}"
+      else
+        transport.close
+      end
       url
     rescue StandardError => e
+      @mos.synchronize { @connecting.delete(url) }
       @logger.puts "pool: #{url} failed: #{e.class}"
       drop(url, penalty: true)
       nil
@@ -57,12 +84,17 @@ module Nostrd
 
     # Stream a person's notes from one assigned relay (RelayPicker's assignment).
     # NOTE: no limit key — strfry treats limit:0 as "zero events".
-    # One batched home stream per relay: every person in a single REQ. The
-    # old per-person fan-out (1 REQ each) starved the pool's per-connection
-    # cap of 8 — once follows outgrew 8, every new stream queued forever and
-    # the home feed froze at whatever history was cached at startup.
-    def subscribe_home(url, sub_id, pubkeys)
-      queue_req(url, sub_id, NostrCore::Subscription.req(sub_id, { authors: pubkeys, kinds: [1, 7, 1111] }), false)
+    # One batched home stream per relay. The old per-person fan-out (1 REQ
+    # each) starved the pool's per-connection cap of 8 — once follows
+    # outgrew 8, every new stream queued forever and the home feed froze at
+    # whatever history was cached at startup. `since` bounds the initial
+    # replay: the loopback relay serves our OWN store, so replaying history
+    # there only re-ingests what we already have (hundreds of events of
+    # mutex/SQLite churn at every boot) — live push needs no history.
+    def subscribe_home(url, sub_id, pubkeys, since: nil)
+      filter = { authors: pubkeys, kinds: [1, 7, 1111] }
+      filter[:since] = since if since
+      queue_req(url, sub_id, NostrCore::Subscription.req(sub_id, filter), false)
     end
 
     # Single-author stream (kept for tests / future narrow streams).
@@ -72,10 +104,12 @@ module Nostrd
 
     # Replace the home filter in place: NIP-01 re-sending the same sub_id
     # swaps the relay's filter, so slot count and queue stay untouched.
-    def refresh_home(url, sub_id, pubkeys)
+    def refresh_home(url, sub_id, pubkeys, since: nil)
       return false unless @connections.key?(url) && (@live_subs[url] || []).include?(sub_id)
 
-      transmit(url, NostrCore::Subscription.req(sub_id, { authors: pubkeys, kinds: [1, 7, 1111] }))
+      filter = { authors: pubkeys, kinds: [1, 7, 1111] }
+      filter[:since] = since if since
+      transmit(url, NostrCore::Subscription.req(sub_id, filter))
       true
     end
 
@@ -89,10 +123,17 @@ module Nostrd
 
     # NIP-46 bunker transport: requests arrive encrypted to us (kind 24133,
     # p-tagged to our pubkey). Persistent stream sub, like the inbox.
-    def subscribe_bunker(url, sub_id, my_pubkey)
+    def subscribe_bunker(url, sub_id, my_pubkey, since: nil)
       # priority: the signer's inbox must never wait behind seek storms or
       # the per-connection cap — a queued sub is invisible to NIP-46 clients.
-      queue_req(url, sub_id, NostrCore::Subscription.req(sub_id, { "#p": [my_pubkey], kinds: [24133] }), false, priority: true)
+      filter = { "#p": [my_pubkey], kinds: [24133] }
+      # A fresh connection must NOT re-deliver days of kind-24133 history:
+      # every replayed old request used to be re-answered (NIP-44 decrypt +
+      # Schnorr sign + fan-out publish, each pure Ruby) — minutes of CPU at
+      # every boot, on every relay, growing with history. Old requests are
+      # dead anyway; NIP-46 clients retry when they still care.
+      filter[:since] = since if since
+      queue_req(url, sub_id, NostrCore::Subscription.req(sub_id, filter), false, priority: true)
     end
 
     def seek_relay_list(url, sub_id, pubkey)

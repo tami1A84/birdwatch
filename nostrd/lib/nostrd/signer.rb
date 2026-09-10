@@ -114,6 +114,15 @@ module Nostrd
         raise ArgumentError, "update_relay_list needs relays [{url:, marker:}]" if tags.empty?
 
         sign_event(10002, "", tags)
+      when "update_blossom_servers"
+        # NIP-B7 kind 10063: one ["server", url] tag per blossom server.
+        tags = params["servers"].to_a.filter_map do |u|
+          u = u.to_s.delete_suffix("/")
+          u.match?(%r{\Ahttps?://\S+\z}) ? ["server", u] : nil
+        end
+        raise ArgumentError, "update_blossom_servers needs servers [url]" if tags.empty?
+
+        sign_event(10063, "", tags)
       when "update_contacts"
         # NIP-01 kind 3 contact list: one p-tag per followed pubkey. The
         # caller (follow/unfollow op) passes the post-change follow set.

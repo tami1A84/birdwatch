@@ -344,4 +344,125 @@ class OrchestratorTest < Minitest::Test
     assert @pool.connections.key?("wss://b")
     assert @pool.connections["wss://b"].sent.any? { |f| JSON.parse(f)[0] == "REQ" }
   end
+
+  # Gossip model (mikedilger.com/gossip-model): a person's events are
+  # fetched from their best ~3 relays — the picker's assignments — not from
+  # every connected relay. An assignment relay streams ONLY its assigned
+  # people; a discovered relay with no assignment loses its home stream and
+  # is hung up entirely (connections exist to fetch people, not for their
+  # own sake).
+  def test_home_streams_follow_assignments_not_connectivity
+    @orch.follow("pk_alice")
+    @pool.connect("wss://a")
+    @pool.connect("wss://b")
+    @orch.ingest("wss://a", { "id" => "rl1", "pubkey" => "pk_alice", "created_at" => @t,
+                              "kind" => 10002, "content" => "",
+                              "tags" => [["r", "wss://b", "w"]] })
+    @orch.tick
+    home_req = lambda { |url|
+      (@pool.connections[url]&.sent || []).filter_map do |f|
+        j = JSON.parse(f)
+        j if j[0] == "REQ" && j[1] == "home"
+      end
+    }
+    b_req = home_req.call("wss://b").last
+    assert_equal ["pk_alice"], b_req[2]["authors"], "assigned relay streams its person"
+
+    assert_empty home_req.call("wss://a"), "unassigned relay gets no home stream"
+    refute @pool.connections.key?("wss://a"), "purposeless discovered relay is hung up"
+  end
+
+  # Fresh-store floor: with zero assignments every person is "uncovered"
+  # and rides the open connections — nothing is hung up, the timeline works
+  # while evidence bootstraps, and the net narrows as assignments appear.
+  def test_no_assignments_yet_keeps_all_connections
+    @orch.follow("pk_alice")
+    @pool.connect("wss://a")
+    @pool.connect("wss://b")
+    @orch.tick # no relay lists anywhere: no assignments, no hang-ups
+    assert @pool.connections.key?("wss://a")
+    assert @pool.connections.key?("wss://b")
+    # ...and uncovered people stream everywhere, so the timeline works.
+    home = (@pool.connections.values).any? do |t|
+      ((t&.sent) || []).any? do |f|
+        (j = JSON.parse(f)) && j[0] == "REQ" && j[1] == "home"
+      end
+    end
+    assert home, "some relay still streams the timeline"
+  end
+
+  # Loopback relay: streams EVERY person (it is our own store of record),
+  # replays nothing (since = boot time), never penalty-boxes, and its
+  # fetches are not relay evidence.
+  def test_local_relay_streams_all_persons_since_boot
+    @orch.local_relay_url = "ws://127.0.0.1:7777"
+    @orch.follow("pk_alice")
+    @pool.connect("ws://127.0.0.1:7777")
+    @orch.tick
+    req = @pool.connections["ws://127.0.0.1:7777"].sent.filter_map do |f|
+      j = JSON.parse(f)
+      j if j[0] == "REQ" && j[1] == "home"
+    end.last
+    assert_equal ["pk_alice"], req[2]["authors"]
+    assert_equal @orch.booted_at, req[2]["since"], "no store replay over loopback"
+  end
+
+  def test_loopback_failure_never_penalty_boxes
+    @orch.local_relay_url = "ws://127.0.0.1:7777"
+    picker = @orch.instance_variable_get(:@picker)
+    @orch.relay_failed("ws://127.0.0.1:7777")
+    assert_empty picker.excluded, "loopback dials retry next tick, no 300s box"
+    @orch.relay_failed("wss://net")
+    assert_equal @t + 300, picker.excluded["wss://net"], "network relays keep the box"
+  end
+
+  def test_loopback_fetches_are_not_evidence
+    @orch.local_relay_url = "ws://127.0.0.1:7777"
+    @orch.follow("pk_alice")
+    @orch.ingest("ws://127.0.0.1:7777", { "id" => "n9", "pubkey" => "pk_alice",
+                                          "created_at" => @t, "kind" => 1,
+                                          "content" => "hi", "tags" => [] })
+    assert_empty @store.best_relays_for("pk_alice"),
+                 "serving our own store says nothing about where a person posts"
+  end
+
+  # Profile batches fan over several relays per try (a single relay rarely
+  # knows all 100 authors) and NEVER ask the loopback: it mirrors our own
+  # store, so a "hit" there would be stale data and a miss starts the
+  # backoff clock — names crawled in at boot because it sat first in the
+  # sorted candidate rotation.
+  def test_profile_batch_fans_out_and_skips_loopback
+    @orch.local_relay_url = "ws://127.0.0.1:7777"
+    %w[ws://127.0.0.1:7777 wss://a wss://b wss://c].each { |u| @pool.connect(u) }
+    @orch.follow("pk_alice") # no profile in the store: stale, triggers a batch
+
+    sent = @pool.connections.map do |url, t|
+      [url, t.sent.filter_map { |f|
+        j = JSON.parse(f)
+        j if j[0] == "REQ" && j[1].start_with?("prof")
+      }]
+    end
+    assert_empty sent.assoc("ws://127.0.0.1:7777").last,
+                 "the loopback is never asked for profiles"
+    fanned = sent.select { |_, reqs| reqs.any? }
+    assert_equal %w[wss://a wss://b wss://c], fanned.map(&:first).sort,
+                 "one batch fans over PROFILE_FANOUT relays"
+    sub_ids = fanned.flat_map { |_, reqs| reqs.map { |j| j[1] } }
+    assert_equal %w[prof0x0 prof0x1 prof0x2], sub_ids.sort
+  end
+
+  def test_relay_status_exposes_gossip_coverage
+    @orch.follow("pk_alice")
+    @pool.connect("wss://a")
+    @pool.connect("wss://b")
+    @orch.ingest("wss://a", { "id" => "rl1", "pubkey" => "pk_alice", "created_at" => @t,
+                              "kind" => 10002, "content" => "",
+                              "tags" => [["r", "wss://b", "w"]] })
+    @orch.tick
+    b = @orch.relay_status.find { |r| r["url"] == "wss://b" }
+    assert_equal 1, b["covers"], "gossip rows report how many people they fetch"
+    refute b["mine"]
+    assert_nil @orch.relay_status.find { |r| r["url"] == "wss://a" },
+               "the unassigned relay was hung up and leaves the panel"
+  end
 end

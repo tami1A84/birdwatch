@@ -17,8 +17,10 @@ module Nostrd
 
     # Public servers tried in order by upload_and_mirror / tooling. One
     # success per blob is enough for serving; two copies are kept.
+    # NOTE: files.sovbit.host is deliberately absent — its BUD-01 PUT
+    # /<sha256> route 405s and uploads there never stick; the user has
+    # also blacklisted it outright.
     DEFAULT_SERVERS = %w[
-      https://files.sovbit.host
       https://nostr.download
       https://cdn.nostrcheck.me
       https://blossom.primal.net

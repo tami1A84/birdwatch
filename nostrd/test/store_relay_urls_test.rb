@@ -19,6 +19,16 @@ class StoreRelayUrlsTest < Minitest::Test
     assert_equal "wss://yabu.me", NostrCore.normalize_relay_url("wss://yabu.me")
   end
 
+  # Loopback fetches are not network evidence (the embedded relay serves
+  # our own store): purged once at boot so it cannot crowd real relays out
+  # of a person's top-3.
+  def test_purge_loopback_evidence
+    @store.record_fetch("ws://127.0.0.1:7777/", "pk_alice", 1_700_000_000)
+    @store.record_fetch("wss://net", "pk_alice", 1_700_000_000)
+    @store.purge_loopback_evidence("ws://127.0.0.1:7777")
+    assert_equal ["wss://net"], @store.person_relay_urls("pk_alice")
+  end
+
   def test_my_relay_roundtrip_normalizes_url
     @store.upsert_my_relay("wss://y/", read: true, inbox: false, write: true,
                            outbox: false, discover: false)

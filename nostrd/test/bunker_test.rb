@@ -33,12 +33,14 @@ class BunkerTest < Minitest::Test
   end
 
   class FakePool
-    attr_reader :published, :bunker_attempts
+    attr_reader :published, :bunker_attempts, :bunker_since
 
     def initialize
       @published = []
       @live = {} # url => [sub_id] — mirrors RelayPool#live_subs
       @bunker_attempts = Hash.new(0)
+      @bunker_since = {}
+      @connections = {}
     end
 
     def publish(event, urls: nil)
@@ -46,11 +48,14 @@ class BunkerTest < Minitest::Test
       [urls].flatten.compact
     end
 
-    def subscribe_bunker(url, sub_id, _my_pubkey)
+    def subscribe_bunker(url, sub_id, _my_pubkey, since: nil)
       @bunker_attempts[url] += 1
+      @bunker_since[url] = since
       (@live[url] ||= []) << sub_id
       true
     end
+
+    def connections = @connections # respond() unions these with the source relay
 
     def sub_live?(url, sub_id) = (@live[url] || []).include?(sub_id)
 
@@ -200,11 +205,67 @@ class BunkerTest < Minitest::Test
     bunker.ensure_subscribed(["wss://a"]) # must not raise
   end
 
+  # Replay storm regression: kind-24133 subs used to have no since, so every
+  # (re)connect re-delivered days of history and the signer re-answered each
+  # old request — pure-Ruby NIP-44 + Schnorr pegging the CPU at boot.
+  def test_replayed_old_request_is_ignored
+    pool = FakePool.new
+    bunker = Nostrd::Bunker.new(signer: @signer, config: config(secret: "ab" * 16), pool: pool)
+    client_sk = SecureRandom.random_bytes(32)
+    client_pk = NostrCore::Bip340.public_key(client_sk)
+
+    stale = kind_24133(client_sk, client_pk, @signer.pubkey,
+                       { "id" => "old", "method" => "ping" },
+                       created_at: Time.now.to_i - Nostrd::Bunker::REQUEST_TTL - 5)
+    bunker.handle_event(stale, url: "ws://x")
+    assert_empty pool.published, "dead requests are never re-answered"
+  end
+
+  def test_duplicate_request_is_answered_once
+    pool = FakePool.new
+    bunker = Nostrd::Bunker.new(signer: @signer, config: config(secret: "ab" * 16), pool: pool)
+    client_sk = SecureRandom.random_bytes(32)
+    client_pk = NostrCore::Bip340.public_key(client_sk)
+
+    request = kind_24133(client_sk, client_pk, @signer.pubkey,
+                         { "id" => "q1", "method" => "ping" })
+    bunker.handle_event(request, url: "ws://relay-a")
+    bunker.handle_event(request, url: "ws://relay-b") # same event, another relay copy
+    assert_equal 1, pool.published.size, "one request id, one response"
+  end
+
+  def test_ensure_subscribed_passes_since_window
+    pool = FakePool.new
+    bunker = Nostrd::Bunker.new(signer: @signer, config: config(secret: "ab" * 16), pool: pool)
+
+    bunker.ensure_subscribed(["wss://a"], since: 123)
+    assert_equal 123, pool.bunker_since["wss://a"]
+
+    bunker.ensure_subscribed(["wss://b"]) # default: now - REQUEST_TTL
+    assert_in_delta Time.now.to_i - Nostrd::Bunker::REQUEST_TTL,
+                    pool.bunker_since["wss://b"], 5
+  end
+
+  def test_response_published_once_covering_source_and_fanout
+    pool = FakePool.new
+    pool.instance_variable_set(:@connections, { "wss://src" => :t, "wss://other" => :t })
+    bunker = Nostrd::Bunker.new(signer: @signer, config: config(secret: "ab" * 16), pool: pool)
+    client_sk = SecureRandom.random_bytes(32)
+    client_pk = NostrCore::Bip340.public_key(client_sk)
+
+    bunker.handle_event(kind_24133(client_sk, client_pk, @signer.pubkey,
+                                   { "id" => "q1", "method" => "ping" }),
+                        url: "wss://src")
+    assert_equal 1, pool.published.size, "no duplicate fan-out publish"
+    _, urls = pool.published.first
+    assert_equal "wss://src", urls.first, "source relay ships first"
+    assert_includes urls, "wss://other"
+  end
+
   private
 
-  def kind_24133(client_sk, client_pk, signer_pk, request)
+  def kind_24133(client_sk, client_pk, signer_pk, request, created_at: Time.now.to_i)
     content = NostrCore::Nip44.encrypt(client_sk, [signer_pk].pack("H*"), JSON.generate(request))
-    created_at = Time.now.to_i
     event = { "pubkey" => client_pk, "created_at" => created_at, "kind" => 24133,
               "tags" => [["p", signer_pk]], "content" => content }
     payload = JSON.generate([0, client_pk, created_at, 24133, event["tags"], content])

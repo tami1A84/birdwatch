@@ -19,7 +19,6 @@ require "optparse"
 require_relative "../lib/nostrd/blossom"
 
 DEFAULT_SERVERS = %w[
-  https://files.sovbit.host
   https://nostr.download
   https://cdn.nostrcheck.me
   https://blossom.primal.net

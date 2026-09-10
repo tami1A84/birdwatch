@@ -9,7 +9,8 @@ module Nostrd
   # Protocol v0: see ../../docs/protocol.md
   class Server
     def initialize(store:, socket_path:, signer: ->(_name, _params) { true }, publisher: nil,
-                   info: nil, relay_flags: nil, advertise_relays: nil, relay_remove: nil, lock: nil, unlock: nil, import_key: nil,
+                   info: nil, relay_flags: nil, advertise_relays: nil, advertise_blossom: nil,
+                   blossom_servers: nil, relay_remove: nil, lock: nil, unlock: nil, import_key: nil,
                    one_shot: nil, history: 100, bunker: nil,
                    follow: nil, unfollow: nil, send_dm: nil, dms: nil, blob_put: nil)
       @store = store
@@ -21,6 +22,8 @@ module Nostrd
       @info = info # -> { "follows" => [...], "relays" => [{url, state}] }
       @relay_flags = relay_flags # gossip switches: {url:, read:, inbox:, write:, outbox:, discover:} -> flags
       @advertise_relays = advertise_relays # -> {relays: [...], event_id:, published_to: n}
+      @advertise_blossom = advertise_blossom # -> {servers: [...], event_id:, published_to: n}
+      @blossom_servers = blossom_servers # -> [url, ...]
       @relay_remove = relay_remove # url -> config removal
       @lock = lock # logout: lock the signer (passphrase to sign again)
       @unlock_op = unlock # passphrase -> signer.unlock
@@ -134,6 +137,9 @@ module Nostrd
       when "relay_flags" then relay_flags(conn, msg)
       when "relay_remove" then relay_remove(conn, msg)
       when "advertise_relays" then advertise_relays(conn, msg)
+      when "advertise_blossom" then advertise_blossom(conn, msg)
+      when "blossom_servers" then blossom_servers_op(conn, msg)
+      when "blossom_set" then blossom_set_op(conn, msg)
       when "announce_repo" then announce_repo(conn, msg)
       when "follow" then follow_op(conn, msg)
       when "unfollow" then unfollow_op(conn, msg)
@@ -204,6 +210,7 @@ module Nostrd
             my_profile: data["my_profile"] || data[:my_profile],
             locked: data["locked"] || data[:locked] || false,
             relays: data["relays"] || data[:relays] || [],
+            blossom: data["blossom"] || data[:blossom] || [],
             profiles: data["profiles"] || data[:profiles] || [],
             bunker: { "enabled" => @bunker&.enabled? || false,
                       "sessions" => @bunker ? @bunker.session_pubkeys : [] })
@@ -366,6 +373,40 @@ module Nostrd
       reply(conn, ev: "ack", id: msg["id"], ok: true,
                  event_id: out["event_id"], relays: out["relays"] || [],
                  published_to: out["published_to"] || 0)
+    rescue StandardError => e
+      reply(conn, ev: "ack", id: msg["id"], ok: false, error: e.message)
+    end
+
+    # Blossom server list (NIP-B7): publish the current list as kind 10063.
+    def advertise_blossom(conn, msg)
+      out = @advertise_blossom&.call || {}
+      reply(conn, ev: "ack", id: msg["id"], ok: true,
+                 event_id: out["event_id"], servers: out["servers"] || [],
+                 published_to: out["published_to"] || 0)
+    rescue StandardError => e
+      reply(conn, ev: "ack", id: msg["id"], ok: false, error: e.message)
+    end
+
+    # Current blossom list (override file → published event → defaults).
+    def blossom_servers_op(conn, msg)
+      urls = @blossom_servers&.call || []
+      reply(conn, ev: "result", id: msg["id"], ok: true, data: { "servers" => urls })
+    rescue StandardError => e
+      reply(conn, ev: "result", id: msg["id"], ok: false, error: e.message)
+    end
+
+    # Persist an edited list to ~/.config/nostrd/blossom.json (the daemon
+    # picks it up as the source of truth for uploads and publishing).
+    def blossom_set_op(conn, msg)
+      urls = Array(msg.dig("params", "servers")).map { |u| u.to_s.delete_suffix("/") }
+                                              .select { |u| u.match?(%r{\Ahttps?://\S+\z}) }.uniq
+      raise ArgumentError, "blossom_set needs servers [url]" if urls.empty?
+
+      file = File.expand_path("~/.config/nostrd/blossom.json")
+      dir = File.dirname(file)
+      Dir.mkdir(dir) unless Dir.exist?(dir)
+      File.write(file, JSON.generate(urls))
+      reply(conn, ev: "ack", id: msg["id"], ok: true, servers: urls)
     rescue StandardError => e
       reply(conn, ev: "ack", id: msg["id"], ok: false, error: e.message)
     end

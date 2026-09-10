@@ -101,6 +101,12 @@ module Nostrd
 
     # --- events ---
 
+    # One indexed SELECT per event: id is the primary key, so this is the
+    # cheap "already have it?" check the live feed gate leans on.
+    def event_exists?(id)
+      !@db.execute("SELECT 1 FROM events WHERE id = ? LIMIT 1", [id]).empty?
+    end
+
     def upsert_event(event)
       @db.execute(
         "INSERT OR IGNORE INTO events VALUES (?,?,?,?,?,?)",
@@ -119,6 +125,20 @@ module Nostrd
         "#{where} ORDER BY created_at DESC LIMIT ?",
         args
       ).map { |row| row_to_event(row) }
+    end
+
+    # My kind-10063 blossom server list (NIP-B7): ["server", url] tags of
+    # the latest replaceable event, or [] when none ingested yet.
+    def blossom_servers_for(pubkey)
+      row = @db.execute(
+        "SELECT tags FROM events WHERE pubkey = ? AND kind = 10063 " \
+        "ORDER BY created_at DESC LIMIT 1", [pubkey]
+      ).first
+      return [] unless row
+
+      JSON.parse(row[0]).filter_map { |t| t[1] if t.is_a?(Array) && t[0] == "server" }
+    rescue JSON::ParserError
+      []
     end
 
     # My kind-10002 relay list as {url, read, write} hashes (NIP-65: a nil
@@ -308,6 +328,14 @@ module Nostrd
       )
       @db.execute "UPDATE person_relays SET last_fetched = ? WHERE pubkey = ? AND url = ?",
                   [now, pubkey, url]
+    end
+
+    # Loopback fetches are not network evidence: the embedded relay serves
+    # our own store, so it would otherwise score #1 for every person and
+    # crowd real relays out of the top-3. Run once at boot.
+    def purge_loopback_evidence(url)
+      @db.execute "DELETE FROM person_relays WHERE url = ?",
+                  [NostrCore.normalize_relay_url(url)]
     end
 
     def newest_relay_list_at(pubkey)

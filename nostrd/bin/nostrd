@@ -169,7 +169,12 @@ if options[:live]
   # Live home feed gate. Own signed events arrive with symbol keys, relay
   # JSON with string keys — LiveFeed normalizes both, keeps kind 1 + 1111,
   # and suppresses the relay echo of an event already sent to clients.
-  feed = Nostrd::LiveFeed.new { |ev| server&.broadcast_event(ev) }
+  # fresh: only events new to the store reach clients — relays replay days
+  # of stored history at every boot, and broadcasting that replay flooded
+  # the TUI with 'event' + per-event 'profiles' frames (frozen keystrokes).
+  feed = Nostrd::LiveFeed.new(fresh: ->(id) { !store.event_exists?(id) }) do |ev|
+    server&.broadcast_event(ev)
+  end
 
   orchestrator = nil
   local_relay = nil
@@ -177,18 +182,23 @@ if options[:live]
   pool = Nostrd::RelayPool.new(
     on_event: ->(url, ev) {
       bunker&.handle_event(ev, url: url)
+      # Freshness BEFORE ingest: ingest stores the event, so a post-ingest
+      # gate check saw every relay arrival as replay and swallowed all live
+      # updates (the TUI/web timeline silently stopped refreshing).
+      fresh = ev.is_a?(Hash) && ev["id"] ? !store.event_exists?(ev["id"]) : true
       orchestrator&.ingest(url, ev)
       if ev.is_a?(Hash) && ev["kind"] == 0 && ev["pubkey"]
         # A profile just landed (seek result): push it so names appear
         # without the client reconnecting. No-op while it has no fields.
         server&.broadcast_profile(ev["pubkey"])
       end
-      feed.push(ev) # live feed: followed people + own posts echoed back
+      feed.push(ev, fresh: fresh) # live feed: followed people + own posts echoed back
     },
     # Deferred: transmit() under the orchestrator mutex can synchronously
     # trigger on_close -> drop on a dead transport; relay_failed must never
-    # re-enter the non-reentrant lock on the same thread.
-    on_disconnect: ->(url, _penalty) { Thread.new { orchestrator&.relay_failed(url) } },
+    # re-enter the non-reentrant lock on the same thread. The pool's penalty
+    # seconds ride along; the orchestrator zeroes them for the loopback.
+    on_disconnect: ->(url, penalty) { Thread.new { orchestrator&.relay_failed(url, penalty) } },
     on_publish_result: ->(url, _id, ok, _msg) { store.record_relay_result(url, success: ok) }
   )
   # NIP-42: answer relay AUTH challenges with a signed kind 22242 event.
@@ -212,7 +222,7 @@ if options[:live]
     urls = pool.publish(event, urls: targets)
     if urls.any?
       store.upsert_event(NostrCore::Event.from_h(event))
-      feed.push(event) # self-echo: home updates the moment we post
+      feed.push(event, force: true) # self-echo: home updates the moment we post
     end
     urls
   end
@@ -231,6 +241,19 @@ if options[:live]
     local_relay.start
     store.upsert_my_relay(local_relay.url, read: true, inbox: false, write: true,
                           outbox: false, discover: true)
+    # Loopback wiring: fetches through it are not network evidence, its dial
+    # failures never penalty-box, and its home stream replays nothing (it IS
+    # our history). Dial NOW, before any network relay: connect+handshake is
+    # sub-millisecond on loopback, so the very first info frame reports the
+    # local relay connected instead of waiting behind sequential network
+    # dials (each dead relay costs its whole handshake timeout).
+    orchestrator.local_relay_url = local_relay.url
+    store.purge_loopback_evidence(local_relay.url)
+    begin
+      pool.connect(local_relay.url)
+    rescue StandardError => e
+      warn "local relay dial failed: #{e.class}: #{e.message}"
+    end
   end
   blossom = nil
   if options[:blossom_port] != 0
@@ -274,6 +297,23 @@ if options[:live]
       warn "tick: #{e.class}: #{e.message}"
     end
   end
+
+  # Ops thread dump: NOSTRD_THREAD_DEBUG=<seconds> periodically logs every
+  # thread's status + Ruby backtrace. Costs nothing when unset — the tool
+  # for "why is the daemon busy" questions no debugger can attach to.
+  if ENV["NOSTRD_THREAD_DEBUG"]
+    Thread.new do
+      loop do
+        sleep Float(ENV["NOSTRD_THREAD_DEBUG"])
+        Thread.list.each do |t|
+          next if t == Thread.current || !t.alive?
+          warn "THREAD-DBG #{t.status} #{t.backtrace&.size}f"
+          t.backtrace&.first(12)&.each { |line| warn "   #{line}" }
+        end
+        warn "THREAD-DBG ----"
+      end
+    end
+  end
 end
 
 server = Nostrd::Server.new(store: store, socket_path: options[:socket], signer: signer,
@@ -286,26 +326,30 @@ server = Nostrd::Server.new(store: store, socket_path: options[:socket], signer:
                             unfollow: ->(pk) { orchestrator&.unfollow(pk) },
                             send_dm: ->(pk, text) { dm&.send_dm(text, to: pk) },
                             dms: ->(partner:, limit:) { dm&.dms(partner: partner, limit: limit) || {} },
-                            # b op: blossom upload — mirror to the embedded server
-                            # first, then public servers; NIP-98 auth from our key.
-                            blob_put: lambda { |path|
-                              raise ArgumentError, "no such file: #{path}" unless
-                                File.file?(File.expand_path(path))
+                              # b op: blossom upload — mirror to the embedded
+                              # server first, then the user's blossom servers
+                              # (override file → published kind 10063 →
+                              # defaults); NIP-98 auth from our key.
+                              blob_put: lambda { |path|
+                                raise ArgumentError, "no such file: #{path}" unless
+                                  File.file?(File.expand_path(path))
 
-                              Nostrd::Blossom.upload_and_mirror(
-                                data: File.binread(File.expand_path(path)),
-                                mime: Nostrd::Blossom.mime_for(path),
-                                auth: lambda { |url, method, sha|
-                                  ev = signer.sign_raw(
-                                    "kind" => 24242, "content" => "",
-                                    "tags" => [["t", "upload"], ["u", "#{url}/upload"],
-                                               ["method", method], ["x", sha],
-                                               ["expiration", (Time.now.to_i + 600).to_s]]
-                                  )
-                                  "Nostr #{Base64.strict_encode64(JSON.generate(ev))}"
-                                },
-                                local_url: (blossom&.running? ? "http://127.0.0.1:#{blossom.port}" : nil))
-                            },
+                                Nostrd::Blossom.upload_and_mirror(
+                                  data: File.binread(File.expand_path(path)),
+                                  mime: Nostrd::Blossom.mime_for(path),
+                                  servers: (orchestrator&.blossom_servers ||
+                                            Nostrd::Blossom::DEFAULT_SERVERS),
+                                  auth: lambda { |url, method, sha|
+                                    ev = signer.sign_raw(
+                                      "kind" => 24242, "content" => "",
+                                      "tags" => [["t", "upload"], ["u", "#{url}/upload"],
+                                                 ["method", method], ["x", sha],
+                                                 ["expiration", (Time.now.to_i + 600).to_s]]
+                                    )
+                                    "Nostr #{Base64.strict_encode64(JSON.generate(ev))}"
+                                  },
+                                  local_url: (blossom&.running? ? "http://127.0.0.1:#{blossom.port}" : nil))
+                              },
                             # Gossip relay switches: local-only merge (inbox=>read, outbox=>write).
                             relay_flags: ->(p) {
                               o = orchestrator
@@ -338,6 +382,21 @@ server = Nostrd::Server.new(store: store, socket_path: options[:socket], signer:
                               { "relays" => relays, "event_id" => event.is_a?(Hash) ? event[:id] : nil,
                                 "published_to" => published.size }
                             },
+                            # Blossom servers (NIP-B7 kind 10063): current list + publish.
+                            blossom_servers: -> {
+                              o = orchestrator
+                              next [] unless o
+                              o.blossom_servers
+                            },
+                            advertise_blossom: -> {
+                              o = orchestrator
+                              next {} unless o
+                              servers = o.blossom_servers
+                              event = signer.call("update_blossom_servers", { "servers" => servers })
+                              published = publisher ? publisher.call(event) : []
+                              { "servers" => servers, "event_id" => event.is_a?(Hash) ? event[:id] : nil,
+                                "published_to" => published.size }
+                            },
                             info: -> {
                               follows = (orchestrator&.followed || []).dup
                               { "follows" => follows,
@@ -346,6 +405,7 @@ server = Nostrd::Server.new(store: store, socket_path: options[:socket], signer:
                                 "locked" => signer.locked?,
                                 "my_profile" => (pk = orchestrator&.pubkey) ? store.profile_for(pk) : nil,
                                 "relays" => (orchestrator&.relay_status || []),
+                                "blossom" => (orchestrator&.blossom_servers || []),
                                 # Names for the SSS follows tab: metadata for
                                 # nearly everyone is already in the DB, so
                                 # serve it with the list instead of waiting

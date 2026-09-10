@@ -107,6 +107,12 @@ module Nostrd
 
     attr_reader :config, :handler
 
+    # Requests older than this are dead: NIP-46 is interactive and clients
+    # retry when they still care. Doubles as the replay guard — subs carry
+    # since = now-TTL so a (re)connecting relay never re-delivers days of
+    # kind-24133 history for the signer to re-answer.
+    REQUEST_TTL = 600
+
     # pool may be nil (socket-op-only use, e.g. non-live daemon) — transport
     # methods no-op but the config/handler ops still work. default_relays
     # seeds the advertised relay set on first enable (the bunker:// URI must
@@ -120,6 +126,7 @@ module Nostrd
       @handler = handler || Nip46Handler.new(signer: signer, config: config)
       @default_relays = Array(default_relays)
       @logger = logger
+      @seen = {} # request event id => expiry — one answer per request, ever
     end
 
     # Enabled only when a config with a secret exists (bunker.json present).
@@ -165,13 +172,14 @@ module Nostrd
     # Liveness is verified against the pool on every call — a sub that was
     # never started (REQ cap queueing) or lost its slot (relay drop clears
     # live subs) is re-issued, never assumed alive from local bookkeeping.
-    def ensure_subscribed(urls)
+    def ensure_subscribed(urls, since: nil)
       return unless enabled? && @pool
 
+      since ||= Time.now.to_i - REQUEST_TTL
       urls.each do |url|
         next if @pool.sub_live?(url, "bunker")
 
-        @pool.subscribe_bunker(url, "bunker", @my_pubkey)
+        @pool.subscribe_bunker(url, "bunker", @my_pubkey, since: since)
       end
     end
 
@@ -199,6 +207,22 @@ module Nostrd
       seckey = @signer.seckey
       return unless seckey # locked signer: cannot derive conversation keys
 
+      # Replay guards, before any crypto: a (re)connecting relay re-delivers
+      # everything matching the sub, and the same request arrives once per
+      # relay that holds it. Without these, boot storms re-answered days of
+      # old requests — each answer is pure-Ruby NIP-44 + Schnorr + a fan-out
+      # publish, which pegged the daemon's CPU and starved everything else.
+      now = Time.now.to_i
+      return if event["created_at"].to_i <= now - REQUEST_TTL
+
+      id = event["id"].to_s
+      unless id.empty?
+        @seen.reject! { |_k, exp| exp < now } if @seen.size > 128
+        return if @seen.key?(id) # already answered (or being answered)
+
+        @seen[id] = now + REQUEST_TTL
+      end
+
       request_json = NostrCore::Nip44.decrypt(seckey, [client].pack("H*"),
                                               event["content"].to_s)
       request = JSON.parse(request_json)
@@ -221,9 +245,10 @@ module Nostrd
                                          JSON.generate(response))
       event = @signer.sign_event(24133, content, [["p", client]])
       # Source relay first (that is where the client is listening), then the
-      # regular gossip fan-out for redundancy.
-      @pool&.publish(event, urls: url ? [url] : nil)
-      @pool&.publish(event) if url
+      # regular gossip fan-out for redundancy — as ONE publish call: the old
+      # pair of calls transmitted the source relay twice.
+      targets = url ? ([url] | ((@pool&.connections&.keys) || [])) : nil
+      @pool&.publish(event, urls: targets)
       event
     end
   end

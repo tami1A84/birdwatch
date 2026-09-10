@@ -47,5 +47,36 @@ module Nostrd
       @feed.push({ "kind" => 1, "id" => "e599" }) # still remembered -> suppressed
       assert_equal 601, @sent.size
     end
+
+    def test_fresh_gate_swallows_events_the_store_already_has
+      known = %w[old1 old2]
+      @feed = LiveFeed.new(fresh: ->(id) { !known.include?(id) }) { |ev| @sent << ev }
+      @feed.push({ "kind" => 1, "id" => "old1" }) # relay replay of stored history
+      @feed.push({ "kind" => 1, "id" => "new1" }) # genuinely new
+      assert_equal %w[new1], @sent.map { |e| e["id"] }
+    end
+
+    def test_push_fresh_kwarg_overrides_the_gate
+      # The wiring pre-computes freshness BEFORE ingest stores the event,
+      # then passes the answer in — the constructor gate would see the
+      # event as already stored and drop every live arrival.
+      @feed = LiveFeed.new(fresh: ->(_id) { false }) { |ev| @sent << ev }
+      @feed.push({ "kind" => 1, "id" => "live1" }, fresh: true)
+      @feed.push({ "kind" => 1, "id" => "live2" }, fresh: false)
+      assert_equal %w[live1], @sent.map { |e| e["id"] }
+      # The explicit answer also feeds the seen cache: a later echo is
+      # suppressed with or without a fresh answer.
+      @feed.push({ "kind" => 1, "id" => "live1" }, fresh: true)
+      assert_equal 1, @sent.size
+    end
+
+    def test_force_bypasses_the_fresh_gate_for_own_publishes
+      @feed = LiveFeed.new(fresh: ->(_id) { false }) { |ev| @sent << ev }
+      @feed.push({ kind: 1, id: "own", content: "mine" }, force: true)
+      assert_equal %w[own], @sent.map { |e| e["id"] }
+      # ...and the echo of it is still suppressed (seen cache + gate)
+      @feed.push({ "kind" => 1, "id" => "own" })
+      assert_equal 1, @sent.size
+    end
   end
 end

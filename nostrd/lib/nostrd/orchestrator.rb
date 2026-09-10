@@ -16,6 +16,10 @@ module Nostrd
     RELAY_SEEKS_PER_TICK = 8
     # Profile sync is one batched authors-REQ per try (rotating relays).
     PROFILE_BATCH = 100
+    # One profile batch is fanned over several relays per try: a single relay
+    # rarely knows all 100 authors, and one-relay-per-30s-tick rotation made
+    # names crawl in at boot.
+    PROFILE_FANOUT = 3
     # Mentions + NIP-17 inbox filter: kind 1059 (gift wrap) rides the same
     # p-tagged sub so private DMs arrive without a second REQ slot.
     INBOX_KINDS = [1, 7, 1111, 1059].freeze
@@ -48,6 +52,15 @@ module Nostrd
       # on_disconnect -> relay_failed synchronously on failure, which would
       # re-enter the non-reentrant @mutex if dialed under the lock.
       @pending_dials = []
+      # Same story for hang-ups: relays that lost their purpose (assignment
+      # gone, not ours, no bunker duty) are disconnected outside the lock.
+      @pending_disconnects = []
+      # URL of the embedded loopback relay (bin/nostrd wires it after start).
+      # Loopback is our own store mirrored over NIP-01: fetches through it are
+      # not network evidence, its dial failures never penalty-box, and its
+      # home stream replays nothing (since boot) because it IS our history.
+      @local_relay_url = nil
+      @booted_at = @now.call
       # EM callbacks (per relay), dial threads and the tick thread all touch
       # this state — one non-reentrant lock, bodies in *_unlocked internals.
       @mutex = Mutex.new
@@ -55,6 +68,8 @@ module Nostrd
     end
 
     attr_reader :followed
+    attr_accessor :local_relay_url
+    attr_reader :booted_at
 
     # First boot: seed gossip switches from the published NIP-65 list
     # (marker nil = both advertised halves). Local-only state.
@@ -95,6 +110,23 @@ module Nostrd
 
     def remove_my_relay(url) = @store.remove_my_relay(url)
 
+    # Blossom server list (NIP-B7 kind 10063). Source of truth: the local
+    # override file (~/.config/nostrd/blossom.json, edited from the TUI),
+    # falling back to our published kind-10063 event, then baked defaults.
+    def blossom_servers
+      file = File.expand_path("~/.config/nostrd/blossom.json")
+      if File.readable?(file)
+        urls = Array(JSON.parse(File.read(file))).filter_map do |u|
+          u if u.to_s.match?(%r{\Ahttps?://\S+\z})
+        end
+        return urls unless urls.empty?
+      end
+      mine = (pk = self.pubkey) ? @store.blossom_servers_for(pk) : []
+      return mine unless mine.empty?
+
+      Nostrd::Blossom::DEFAULT_SERVERS.dup
+    end
+
     # The kind-10002 payload: inbox => advertised read, outbox => advertised
     # write, both => nil marker. Hidden read/write relays stay out.
     def advertised_relay_list
@@ -119,8 +151,10 @@ module Nostrd
               "write" => true, "outbox" => false, "discover" => false }
         { "url" => url,
           "state" => @pool.connections.key?(url) ? "connected" : "offline",
+          "mine" => by_url.key?(url),
           "read" => e["read"], "inbox" => e["inbox"], "write" => e["write"],
-          "outbox" => e["outbox"], "discover" => e["discover"], "search" => e["search"] == true }
+          "outbox" => e["outbox"], "discover" => e["discover"], "search" => e["search"] == true,
+          "covers" => @picker.assignments[url]&.size }
       end
     end
 
@@ -149,6 +183,15 @@ module Nostrd
       (@followed + [@my_pubkey].compact).uniq
     end
 
+    # Relays worth ASKING for things we might be missing. The loopback
+    # mirrors our own store — anything it can serve, the info frame and
+    # broadcast_profile already delivered — so seeking from it only burns
+    # rotation tries (and starts their backoff clocks) or "answers" with
+    # stale cached data, postponing the real network refresh.
+    def network_urls
+      @pool.connections.keys.sort - [@local_relay_url]
+    end
+
     # TUI needs to know which reactions are its own (info frame "me").
     def pubkey = @my_pubkey
 
@@ -157,16 +200,27 @@ module Nostrd
       dial_pending
     end
 
-    # Flush queued dials OUTSIDE the lock (see @pending_dials note). Re-tick
-    # afterwards so subscriptions attach to freshly connected relays.
+    # Flush queued dials and hang-ups OUTSIDE the lock (see @pending_dials
+    # note). Re-tick afterwards so subscriptions attach to fresh relays.
     def dial_pending
-      urls = nil
+      urls, drops = nil, nil
       @mutex.synchronize do
         urls = @pending_dials.uniq
         @pending_dials = []
+        drops = @pending_disconnects.uniq - urls
+        @pending_disconnects = []
       end
-      return if urls.empty?
+      return if urls.empty? && drops.empty?
 
+      # Hang up first: a dropped connection frees the relay's view of us and
+      # cannot race the dial of the same url (drops never share urls with dials).
+      drops.each do |url|
+        begin
+          @pool.disconnect(url)
+        rescue StandardError => e
+          @logger.puts "orchestrator: disconnect #{url} failed: #{e.class}: #{e.message}"
+        end
+      end
       urls.each do |url|
         begin
           @pool.connect(url)
@@ -213,8 +267,8 @@ module Nostrd
       adopted
     end
 
-    def relay_failed(url)
-      @mutex.synchronize { relay_failed_unlocked(url) }
+    def relay_failed(url, penalty = 300)
+      @mutex.synchronize { relay_failed_unlocked(url, penalty) }
       dial_pending
     end
 
@@ -259,8 +313,13 @@ module Nostrd
       true
     end
 
-    def relay_failed_unlocked(url)
-      @picker.relay_disconnected(url, 300)
+    def relay_failed_unlocked(url, penalty)
+      # Loopback is not a network peer: a failed self-dial retries on the
+      # next tick instead of poisoning the picker's assignments for 5 minutes
+      # (the loopback carries the most evidence, so a 300s box starved the
+      # whole home feed of its fastest source).
+      penalty = 0 if url == @local_relay_url
+      @picker.relay_disconnected(url, penalty)
       @home_subs.delete(url)
       @home_sigs.delete(url)
       tick_unlocked
@@ -275,42 +334,55 @@ module Nostrd
       end
     end
 
-    # Keep live REQ subscriptions aligned with the picker's assignments.
-    # One batched home stream per connected relay: every person in a single
-    # REQ (kinds 1 + 1111). The old per-person fan-out starved the pool's
-    # per-connection REQ cap of 8 — past ~8 follows, every new stream queued
-    # forever and the home feed froze at startup history. NIP-01 re-REQ with
-    # the same sub_id swaps the relay's filter in place, so the follow set
-    # can change without touching slots or queues.
+    # Keep live REQ subscriptions aligned with the gossip model
+    # (mikedilger.com/gossip-model): each person's events are fetched from
+    # their best ~3 relays — exactly the RelayPicker's assignments — instead
+    # of every connected relay streaming everyone. Two relays still stream
+    # the full person set: the loopback relay (our own store of record) and
+    # user-configured inbox/discover relays (bootstrap: a fresh follow has
+    # no evidence until its kind-10002 lands; those relays carry it while
+    # the picker has nothing to place it on). One batched home REQ per
+    # relay; a changed author set re-sends the same sub_id and swaps the
+    # filter in place (NIP-01). A relay that loses its assignment entirely
+    # gets its home stream CLOSED and — unless it is loopback / configured /
+    # a bunker target — is hung up: connections exist to fetch specific
+    # people, not for their own sake.
     def sync_subscriptions
       persons = self.persons.sort
-      sig = persons.join(",")
+      assignments = @picker.assignments
+      bootstrap = bootstrap_relay_urls
       @pool.connections.keys.sort.each do |url|
-        if @home_subs[url].nil?
-          next unless @pool.subscribe_home(url, "home", persons)
+        authors = home_authors_for(url, persons, assignments, bootstrap)
+        since = url == @local_relay_url ? @booted_at : nil
+        if authors.nil?
+          drop_home(url, bootstrap)
+        elsif @home_subs[url].nil?
+          next unless @pool.subscribe_home(url, "home", authors, since: since)
 
           @home_subs[url] = "home"
-          @home_sigs[url] = sig
-          @logger.puts "home: streaming #{persons.size} authors via #{url.delete_prefix('wss://')}"
-        elsif @home_sigs[url] != sig && @pool.refresh_home(url, "home", persons)
-          @home_sigs[url] = sig
+          @home_sigs[url] = authors
+          @logger.puts "home: streaming #{authors.size} authors via #{url.delete_prefix('wss://')}"
+        elsif @home_sigs[url] != authors && @pool.refresh_home(url, "home", authors, since: since)
+          @home_sigs[url] = authors
         end
       end
       (@home_subs.keys - @pool.connections.keys).each do |url|
         @home_subs.delete(url)
         @home_sigs.delete(url)
       end
-      # Still dial relays the picker picked for seek affinity.
-      @picker.assignments.each_key do |url|
-        @pending_dials << url unless @pool.connections.key?(url)
-      end
+      dial_targets(assignments)
       # NIP-46 bunker: re-check each tick so the persistent kind-24133 sub
       # survives relay reconnects, and dial the relays advertised in the
       # bunker:// URI even when gossip never picks them. Subscribing an
       # unconnected target is fine — queue_req holds the frame until the
       # dial completes.
       if @bunker
-        @bunker.ensure_subscribed((@pool.connections.keys + @bunker.relay_targets).uniq)
+        # network_urls, not all connections: the loopback only ever holds OUR
+        # copies of past traffic (clients cannot publish to it), so its
+        # bunker sub is pure replay — at boot it re-delivered days of
+        # kind-24133 history and the signer spent minutes re-answering dead
+        # requests, pegging both loopback threads at 100% CPU.
+        @bunker.ensure_subscribed((network_urls + @bunker.relay_targets).uniq)
         @bunker.relay_targets.each do |url|
           @pending_dials << url unless @pool.connections.key?(url)
         end
@@ -318,28 +390,76 @@ module Nostrd
       # Mentions + NIP-17 inbox: one persistent per-relay sub p-tagged to us,
       # re-issued every tick like the bunker sub (relay drops clear live
       # subs, and a queued-but-never-started sub is invisible on the wire).
+      # Loopback excluded, same replay logic as the bunker sub.
       if @my_pubkey
         @pool.connections.keys.sort.each do |url|
+          next if url == @local_relay_url
           next if @pool.sub_live?(url, "inbox")
 
           @pool.subscribe_inbox(url, "inbox", @my_pubkey, kinds: INBOX_KINDS)
         end
       end
-      # Gossip switch wiring: an advertised inbox (or discover) relay is a
-      # dial target of its own — evidence-based picking alone never reaches
-      # a relay we have never fetched from (e.g. paid relays).
+    end
+
+    # The home author set for one relay under the gossip model (see
+    # sync_subscriptions): its assigned people, PLUS everyone the picker
+    # could not place yet — fresh follows ride every open connection until
+    # their kind-10002 lands and evidence narrows the net onto their best
+    # ~3 relays. Loopback and user-configured inbox/discover relays always
+    # stream the full set. nil = no home stream on this relay.
+    def home_authors_for(url, persons, assignments, bootstrap)
+      return persons if url == @local_relay_url || bootstrap.include?(url)
+
+      covered = assignments[url] || []
+      uncovered = persons - assignments.values.flatten
+      return nil if covered.empty? && uncovered.empty?
+
+      (covered | uncovered).sort
+    end
+
+    # Relays the user explicitly put to work (config, not evidence): they
+    # bootstrap coverage for people the picker cannot place yet.
+    def bootstrap_relay_urls
+      @store.my_relays.select { |r| r["inbox"] || r["discover"] }.map { |r| r["url"] }
+    end
+
+    # Close the home stream of a relay with no assignment; hang up entirely
+    # when nothing else needs the connection. Queued outside the lock —
+    # disconnect fires on_disconnect -> relay_failed (see @pending_dials).
+    def drop_home(url, bootstrap)
+      if @home_subs.delete(url)
+        @home_sigs.delete(url)
+        @pool.transmit_close(url, "home")
+        @logger.puts "home: closing stream via #{url.delete_prefix('wss://')} (unassigned)"
+      end
+      return if url == @local_relay_url || bootstrap.include?(url) ||
+                (@bunker && @bunker.relay_targets.include?(url))
+
+      # key? guard: once dropped, later ticks must not re-queue the hang-up
+      # (disconnect would re-fire on_disconnect every tick).
+      @pending_disconnects << url if @pool.connections.key?(url)
+    end
+
+    # Dial queue, most important first: configured relays (loopback among
+    # them — connect before any network dial so the relay tab never shows it
+    # waiting behind a 5s-dead gossip pick), then the picker's assignment
+    # dials, then bunker targets (queued in the bunker block above).
+    def dial_targets(assignments)
       @store.my_relays.each do |r|
         next unless r["inbox"] || r["discover"]
         next if @pool.connections.key?(r["url"])
 
         @pending_dials << r["url"]
       end
+      assignments.each_key do |url|
+        @pending_dials << url unless @pool.connections.key?(url)
+      end
     end
 
     # Seeker: refresh relay lists that are stale (>7 days) or unknown,
     # with exponential backoff per person (1min doubling, capped at 1h).
     def seek_stale(max_age: 7 * 24 * 3600)
-      urls = @pool.connections.keys.sort
+      urls = network_urls
       return [] if urls.empty?
 
       budget = RELAY_SEEKS_PER_TICK
@@ -368,12 +488,13 @@ module Nostrd
       newest && (@now.call - newest) < max_age
     end
 
-    # Profiles (kind 0) label the TUI. Batched politeness: ONE REQ with up to
-    # PROFILE_BATCH authors per try, rotating relays — how clients are
-    # expected to sync metadata. A productive batch re-fires next tick; an
-    # empty one backs off exponentially.
+    # Profiles (kind 0) label the TUI. Batched politeness: ONE REQ with up
+    # to PROFILE_BATCH authors per try, fanned over PROFILE_FANOUT relays at
+    # once (a single relay rarely knows all 100), sliding one relay per try —
+    # how clients are expected to sync metadata. A productive batch re-fires
+    # next tick; an empty one backs off exponentially.
     def seek_profiles
-      urls = @pool.connections.keys.sort
+      urls = network_urls
       return if urls.empty?
       return if @now.call < @prof_batch_at
 
@@ -381,18 +502,22 @@ module Nostrd
       return if stale.empty?
 
       pks = stale.first(PROFILE_BATCH)
+      # Evidence-backed relays first (they know these people), then the rest.
       candidates = ((pks.flat_map { |pk| @store.person_relay_urls(pk) } & urls).uniq + urls).uniq
-      url = candidates[@prof_batch_tries % candidates.size]
-      return unless @pool.seek_profiles(url, "prof#{@prof_batch_tries}", pks)
+      fan_urls = (0...PROFILE_FANOUT).map { |i| candidates[(@prof_batch_tries + i) % candidates.size] }.uniq
+      fan = fan_urls.each_with_index.filter_map do |url, i|
+        @pool.seek_profiles(url, "prof#{@prof_batch_tries}x#{i}", pks) ? url : nil
+      end
+      return if fan.empty?
 
-      @logger.puts "prof-batch: #{pks.size} authors via #{url.delete_prefix('wss://')}"
+      @logger.puts "prof-batch: #{pks.size} authors via #{fan.map { |u| u.delete_prefix('wss://') }.join(' + ')}"
       @prof_batch_tries += 1
       if @prof_batch_hits > @prof_batch_hits_at_batch
         @prof_batch_miss = 0
         @prof_batch_at = @now.call + 1 # next tick keeps walking
       else
         @prof_batch_miss += 1
-        @prof_batch_at = @now.call + [60 * 2**@prof_batch_miss, 3600].min
+        @prof_batch_at = @now.call + [30 * 2**@prof_batch_miss, 600].min
       end
       @prof_batch_hits_at_batch = @prof_batch_hits
     end
@@ -417,7 +542,7 @@ module Nostrd
     # remaining connected relays as rotation fallback.
     def candidate_relays(pk, connected)
       known = @store.person_relay_urls(pk) & connected
-      (known + connected).uniq
+      (known + connected).uniq - [@local_relay_url]
     end
 
     # Our own kind-3 contact list adopts the account's real follows: refresh
@@ -429,7 +554,7 @@ module Nostrd
       now = @now.call
       return if @contacts_at[@my_pubkey] > now - 3600
 
-      urls = @pool.connections.keys.sort
+      urls = network_urls
       return if urls.empty?
 
       url = urls[@contact_tries[@my_pubkey] % urls.size]
@@ -465,6 +590,10 @@ module Nostrd
 
     def learn_fetch(url, pubkey)
       return unless pubkey
+      # The loopback relay serves our own store: recording fetches from it
+      # would make it the top-scoring relay for every person and crowd real
+      # network relays out of the top-3 (its rows are purged at boot too).
+      return if url == @local_relay_url
 
       @store.record_fetch(url, pubkey, @now.call)
     end

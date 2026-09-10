@@ -18,6 +18,11 @@
 # The daemon must be running and unlocked; it holds the key, this script
 # never sees it. Run `bin/nostr` (daemon) again after upgrading nostrd so
 # the sign_raw/publish_raw ops exist.
+#
+# Note (2026-09-10): nsite.lol serves blobs with cache-control max-age=3600
+# keyed by path — an updated asset can keep flowing from the gateway's cache
+# for up to an hour after a successful republish. The manifest and blobs are
+# correct; it self-heals when the TTL lapses.
 
 require "net/http"
 require "json"
@@ -41,7 +46,6 @@ MIME = {
 }.freeze
 
 DEFAULT_SERVERS = %w[
-  https://files.sovbit.host
   https://nostr.download
   https://cdn.nostrcheck.me
   https://blossom.primal.net
