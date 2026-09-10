@@ -110,6 +110,8 @@
     1.0150, 1.0076, 1.0000);
   --ease-spring-soft: linear(0.0000, 0.1041, 0.3300, 0.5794, 0.7945, 0.9503,
     1.0444, 1.0872, 1.0940, 1.0799, 1.0572, 1.0340, 1.0150, 1.0000);
+  /* iOS sheet/push curve — UIKit's default navigation + sheet easing */
+  --ease-ios: cubic-bezier(0.32, 0.72, 0, 1);
 
   /* M3 type scale on the serif family */
   --md-sys-typescale-display-large-font: var(--font-serif);
@@ -565,6 +567,31 @@ span.note-media { display: block; }
   color: inherit;
 }
 
+/* picked photo: 56px rounded-square thumbnail, filename, quiet remove */
+.compose-image__preview-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+}
+.compose-image__preview {
+  width: 56px;
+  height: 56px;
+  object-fit: cover;
+  border-radius: var(--radius-md);
+  background: var(--md-sys-color-surface-container-high);
+}
+.compose-image__name {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--md-sys-color-on-surface-variant);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.compose-image__clear { flex: none; }
+
 /* ------------------------------------------------------------ FAB / nav */
 
 .compose-fab {
@@ -1017,6 +1044,53 @@ html:active-view-transition-type(back)::view-transition-new(root) {
   from {
     opacity: 0;
     transform: translateY(-14px) scale(0.99);
+  }
+}
+
+/* ---- opening a note = iOS push (typed "push" in application.js) ----
+   Modern iPhone navigation: the detail slides in from the right edge over
+   the timeline, which parallax-slides left underneath; the incoming page
+   carries a leading-edge shadow like a stacked card. Back = the exact
+   reverse (detail slides out right, timeline returns from its 28% pause). */
+html:active-view-transition-type(push)::view-transition-old(root) {
+  animation: 0.4s var(--ease-ios) both vt-push-out;
+}
+
+html:active-view-transition-type(push)::view-transition-new(root) {
+  animation: 0.4s var(--ease-ios) both vt-push-in;
+  box-shadow: -16px 0 40px rgba(0, 0, 0, 0.2);
+}
+
+html:active-view-transition-type(push):active-view-transition-type(back)::view-transition-old(root) {
+  animation: 0.4s var(--ease-ios) both vt-push-out-back;
+  box-shadow: -16px 0 40px rgba(0, 0, 0, 0.2);
+}
+
+html:active-view-transition-type(push):active-view-transition-type(back)::view-transition-new(root) {
+  animation: 0.4s var(--ease-ios) both vt-push-in-back;
+}
+
+@keyframes vt-push-out {
+  to {
+    transform: translateX(-28%);
+  }
+}
+
+@keyframes vt-push-in {
+  from {
+    transform: translateX(100%);
+  }
+}
+
+@keyframes vt-push-out-back {
+  to {
+    transform: translateX(100%);
+  }
+}
+
+@keyframes vt-push-in-back {
+  from {
+    transform: translateX(-28%);
   }
 }
 

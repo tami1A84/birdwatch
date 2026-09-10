@@ -585,6 +585,31 @@ span.note-media { display: block; }
   color: inherit;
 }
 
+/* picked photo: 56px rounded-square thumbnail, filename, quiet remove */
+.compose-image__preview-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+}
+.compose-image__preview {
+  width: 56px;
+  height: 56px;
+  object-fit: cover;
+  border-radius: var(--radius-md);
+  background: var(--md-sys-color-surface-container-high);
+}
+.compose-image__name {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--md-sys-color-on-surface-variant);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.compose-image__clear { flex: none; }
+
 /* ------------------------------------------------------------ FAB / nav */
 
 .compose-fab {
@@ -1138,6 +1163,82 @@ html:active-view-transition-type(back)::view-transition-new(root) {
        (:3000 側は同潜在バグあり)。 */
     md-dialog { width: min(560px, calc(100vw - 48px)); }
 
+    /* 2026-09-10: 新規投稿 = iOS風ボトムシート。md-dialog のモーダル <dialog>
+       は UA スタイル (inset-block: 0/0) でビューポート全高に伸び、シャドウ
+       内部には作者スタイルが届かないため、compose だけ自前パネルにする。
+       タイムラインを薄暗く見せて下端からスライドアップ(iOSのシート曲線)。
+       style.css(application.css)には --ease-ios があるが、nsite のインライン
+       シートはこのブロック独自なのでここでも定義する。 */
+    :root { --ease-ios: cubic-bezier(0.32, 0.72, 0, 1); }
+    #compose-dialog {
+      position: fixed;
+      inset: 0;
+      z-index: 59; /* トースト(60)より下、バー/FAB(20-40)より上 */
+      display: flex;
+      align-items: flex-end;
+      justify-content: center;
+    }
+    #compose-dialog[hidden] { display: none; }
+    /* ネイティブの「ファイルを選択」UIは隠す(label全体がピッカー) */
+    #compose-dialog input[type="file"] {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      opacity: 0;
+      pointer-events: none;
+    }
+    .compose-sheet__scrim {
+      position: absolute;
+      inset: 0;
+      background: var(--md-sys-color-scrim);
+      opacity: 0;
+      transition: opacity 0.28s ease;
+    }
+    .compose-sheet__panel {
+      position: relative;
+      width: min(560px, 100%);
+      max-height: calc(100dvh - env(safe-area-inset-top, 0px) - 16px);
+      display: flex;
+      flex-direction: column;
+      background: var(--md-dialog-container-color, var(--md-sys-color-surface-container-high));
+      border-radius: 24px 24px 0 0;
+      padding: 8px 24px 12px;
+      box-shadow: 0 -12px 48px rgba(0, 0, 0, 0.24);
+      transform: translateY(100%);
+      transition: transform 0.42s var(--ease-ios);
+      overscroll-behavior: contain;
+    }
+    #compose-dialog.open .compose-sheet__scrim { opacity: 0.32; }
+    #compose-dialog.open .compose-sheet__panel { transform: translateY(0); }
+    .compose-sheet__grabber {
+      align-self: center;
+      width: 36px;
+      height: 4px;
+      border-radius: 2px;
+      margin-bottom: 10px;
+      background: var(--md-sys-color-on-surface-variant);
+      opacity: 0.4;
+      flex: none;
+    }
+    .compose-sheet__title {
+      margin: 0 0 4px;
+      font-family: var(--font-serif);
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--md-sys-color-on-surface);
+      flex: none;
+    }
+    .compose-sheet__panel .compose-textarea { flex: none; }
+    .compose-sheet__actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      margin-top: 12px;
+      flex: none;
+    }
+    /* ホームインジケーターとの余白: シートは下端まで伸びるので中身で吸収 */
+    .compose-sheet-safe { height: env(safe-area-inset-bottom, 0px); flex: none; }
+
     /* 2026-09-07 N round 3: 起動の瞬間にQR/投稿/検索ダイアログの中身が一瞬
        見えることがある。v11の :not(:defined) ルールは「未アップグレードの
        ダイアログ」だけを覆う。ここではさらに広げて、app.js が最初の実状態
@@ -1298,17 +1399,34 @@ html:active-view-transition-type(back)::view-transition-new(root) {
     <span class="msr" slot="icon">add</span>
   </md-fab>
 
-  <md-dialog id="compose-dialog" class="compose-dialog">
-    <div slot="headline">新規投稿</div>
-    <div slot="content">
+  <!-- 新規投稿は iOS 風ボトムシート(md-dialog はモーダル <dialog> が UA
+       スタイルで inset-block:0/0 に伸びるため、シャドウ内部に触れられない
+       自前パネルで実装する)。scrim タップ/ESC/キャンセルで閉じる。 -->
+  <div id="compose-dialog" class="compose-sheet" hidden>
+    <div class="compose-sheet__scrim" data-compose-scrim></div>
+    <div class="compose-sheet__panel" role="dialog" aria-modal="true" aria-label="新規投稿">
+      <div class="compose-sheet__grabber" aria-hidden="true"></div>
+      <h2 class="compose-sheet__title">新規投稿</h2>
       <textarea id="compose-text" class="compose-textarea" rows="4" maxlength="280"
-                required placeholder="いま何をしている？"></textarea>
+                placeholder="いま何をしている？"></textarea>
+      <div class="compose-image__preview-row" id="compose-image-preview-row" hidden>
+        <img class="compose-image__preview" id="compose-image-preview" alt="">
+        <span class="compose-image__name" id="compose-image-name"></span>
+        <md-icon-button class="compose-image__clear" id="compose-image-clear" aria-label="写真を取り消す">
+          <span class="msr">close</span>
+        </md-icon-button>
+      </div>
+      <label class="compose-image">
+        <input type="file" id="compose-image" accept="image/png,image/jpeg,image/gif,image/webp">
+        <span class="msr">image</span><span class="compose-image__label">写真を追加（10MBまで）</span>
+      </label>
+      <div class="compose-sheet__actions">
+        <md-text-button id="compose-cancel">キャンセル</md-text-button>
+        <md-filled-button id="compose-submit">投稿</md-filled-button>
+      </div>
+      <div class="compose-sheet-safe"></div>
     </div>
-    <div slot="actions">
-      <md-text-button id="compose-cancel">キャンセル</md-text-button>
-      <md-filled-button id="compose-submit">投稿</md-filled-button>
-    </div>
-  </md-dialog>
+  </div>
 
   <md-dialog id="qr-dialog">
     <div slot="headline">QRをスキャン</div>

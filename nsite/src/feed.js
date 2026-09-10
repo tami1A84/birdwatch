@@ -63,12 +63,35 @@ export async function fetchProfiles(relays, pks) {
 }
 
 // Plain-text escape, then linkify bare URLs — the feed is user content from
-// strangers' relays, so nothing is ever inserted as HTML.
-export function renderContent(text) {
+// strangers' relays, so nothing is ever inserted as HTML. Two URL shapes
+// render as lazy <img> elements (rounded via .note-image), linked to the
+// original: a picture extension (…/x.png) and a bare Blossom blob path
+// (…/<64-hex sha256>, the canonical URL blossom uploads return —
+// extensionless by design). NIP-92 imeta tags count as attachments too.
+export function renderContent(text, tags = []) {
   const escaped = String(text)
     .replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
-  return escaped.replace(/https?:\/\/[^\s<>"')\]]+/g,
-    (url) => `<a href="${url}" target="_blank" rel="noopener noreferrer">${url}</a>`)
+  const shown = []
+  let html = escaped.replace(/https?:\/\/[^\s<>"')\]]+/g, (url) => {
+    if (/\.(png|jpe?g|gif|webp|avif)(\?\S*)?$/i.test(url) ||
+        /^https?:\/\/[^/\s]+\/[0-9a-f]{64}$/i.test(url)) {
+      shown.push(url)
+      return `<a href="${url}" target="_blank" rel="noopener noreferrer">` +
+        `<img class="note-image" src="${url}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer"></a>`
+    }
+    return `<a href="${url}" target="_blank" rel="noopener noreferrer">${url}</a>`
+  })
+  // NIP-92 imeta attachments that don't already ride in the content text.
+  const extras = (Array.isArray(tags) ? tags : [])
+    .filter((t) => Array.isArray(t) && t[0] === 'imeta')
+    .map((t) => t.slice(1).join(' ').match(/url (https?:\/\/\S+)/)?.[1])
+    .filter((u) => u && !shown.includes(u))
+  for (const u of extras) {
+    const safe = u.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;')
+    html += `<a href="${safe}" target="_blank" rel="noopener noreferrer">` +
+      `<img class="note-image" src="${safe}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer"></a>`
+  }
+  return html
 }
 
 export function timeLabel(unix) {

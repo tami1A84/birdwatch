@@ -213,7 +213,7 @@ function noteCard(ev) {
   head.append(name, time)
   const body = document.createElement('span')
   body.className = 'tl-item__body'
-  body.innerHTML = renderContent(ev.content)
+  body.innerHTML = renderContent(ev.content, ev.tags)
   main.append(head, body)
 
   card.append(av, main)
@@ -308,29 +308,128 @@ function startLiveFeed() {
 // 閉じてもテキストは残る、と同じ)。
 const DRAFT_KEY = 'bw_compose_draft'
 
-function openCompose() {
-  const dialog = $('compose-dialog')
-  if (!dialog) return
-  $('compose-text').value = localStorage.getItem(DRAFT_KEY) || ''
-  dialog.show()
-  requestAnimationFrame(() => $('compose-text').focus())
+// 選択された添付写真(1枚)。File を保持し、投稿時に Blossom へアップロード
+// してからURLを本文に添える(TUI/Rails と同じ NIP-92 スタイル)。
+let composeImage = null
+let composeImageUrl = null
+
+const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp'])
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024
+
+// NIP-B7: 自分の kind 10063 サーバーリストを優先(デーモンの b キーと同じ
+// 挙動)。無ければ公開サーバーへ。ブラウザからの PUT なので CORS 許可が
+// 確認できているサーバーだけを既定にする(2026-09-10 実測)。
+const DEFAULT_BLOSSOM_SERVERS = ['https://blossom.primal.net', 'https://nostr.download']
+let blossomServersCache = null
+
+async function blossomServers() {
+  if (blossomServersCache) return blossomServersCache
+  blossomServersCache = [...DEFAULT_BLOSSOM_SERVERS]
+  try {
+    if (userPk) {
+      const evs = await relays.query({ kinds: [10063], authors: [userPk], limit: 1 })
+      const latest = evs.sort((a, b) => b.created_at - a.created_at)[0]
+      const list = (latest?.tags || [])
+        .filter((t) => t[0] === 'server' && /^https:\/\//.test(t[1] || ''))
+        .map((t) => t[1].replace(/\/+$/, ''))
+      if (list.length) blossomServersCache = list
+    }
+  } catch { /* fallback list */ }
+  return blossomServersCache
+}
+
+// NIP-98 認証イベント: kind 24242 は自分では署名できないので bunker に
+ // 依頼する(daemon が sign_event する)。Authorization: Nostr <base64(event)>。
+async function blossomAuth(verb, sha, server) {
+  const ev = await bunker.signEvent({
+    kind: 24242,
+    content: '',
+    tags: [
+      ['t', verb],
+      ['x', sha],
+      ['expiration', String(Math.floor(Date.now() / 1000) + 60)],
+      ['u', server],
+    ],
+    created_at: Math.floor(Date.now() / 1000),
+  })
+  const json = JSON.stringify(ev)
+  const bytes = new TextEncoder().encode(json)
+  let bin = ''
+  for (const b of bytes) bin += String.fromCharCode(b)
+  return `Nostr ${btoa(bin)}`
+}
+
+// 1枚アップロード: SHA-256 → 各サーバーへ PUT /upload (2 コピーで打ち切り)。
+// 返る URL は <server>/<sha256> の canonical 形(TUI/Rails と同一)。
+async function uploadComposeImage(file) {
+  if (!bunker.connected) throw new Error('写真のアップロードにはbunker接続が必要です')
+  const buf = await file.arrayBuffer()
+  const digest = await crypto.subtle.digest('SHA-256', buf)
+  const sha = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('')
+  const servers = await blossomServers()
+  let lastErr = 'サーバーに接続できません'
+  for (const server of servers) {
+    try {
+      const auth = await blossomAuth('upload', sha, server)
+      const res = await fetch(`${server}/upload`, {
+        method: 'PUT',
+        headers: { Authorization: auth, 'Content-Type': file.type },
+        body: file,
+      })
+      // 409 = サーバーは既に同じ blob を持っている(BUD-02)→ そのまま使える。
+      const data = await res.json().catch(() => ({}))
+      if (res.ok || res.status === 409) {
+        const url = (typeof data.url === 'string' && /^https:\/\//.test(data.url) && data.url) ||
+          `${server}/${data.id || data.encodedHash || sha}`
+        return { url: url.replace(/\/+$/, ''), sha }
+      }
+      lastErr = `${server.replace(/^https:\/\//, '')} が ${res.status}`
+    } catch (e) {
+      lastErr = e.message || String(e)
+    }
+  }
+  throw new Error(`アップロードに失敗しました (${lastErr})`)
+}
+
+function setComposeImage(file) {
+  if (composeImageUrl) { URL.revokeObjectURL(composeImageUrl); composeImageUrl = null }
+  composeImage = null
+  const row = $('compose-image-preview-row')
+  if (!file) { row.hidden = true; return }
+  composeImage = file
+  composeImageUrl = URL.createObjectURL(file)
+  $('compose-image-preview').src = composeImageUrl
+  $('compose-image-name').textContent = file.name
+  row.hidden = false
 }
 
 async function submitCompose() {
   const text = $('compose-text').value.trim()
-  if (!text) return
+  if (!text && !composeImage) return
   if (!bunker.connected) { toast('投稿にはbunker接続が必要です(設定タブ)'); return }
   const btn = $('compose-submit')
   btn.disabled = true
+  let tags = []
+  let content = text
   try {
+    if (composeImage) {
+      btn.textContent = '写真を送信中…'
+      const up = await uploadComposeImage(composeImage)
+      // NIP-92 imeta: このクライアント以外(Damus/Amethyst…)も写真として出す。
+      tags = [['imeta', `url ${up.url}`, `m ${composeImage.type}`, `x ${up.sha}`]]
+      content = text ? `${text}\n${up.url}` : up.url
+    }
+    btn.textContent = '投稿中…'
     const signed = await bunker.signEvent({
-      kind: 1, content: text, tags: [], created_at: Math.floor(Date.now() / 1000),
+      kind: 1, content, tags, created_at: Math.floor(Date.now() / 1000),
     })
     const res = await relays.publish(signed)
     if (!res.ok) throw new Error('リレーが受け付けませんでした')
     $('compose-text').value = ''
     localStorage.removeItem(DRAFT_KEY)
-    $('compose-dialog').close()
+    setComposeImage(null)
+    $('compose-image').value = ''
+    closeCompose()
     seenIds.add(signed.id) // ライブ購読のエコーで二重表示にならないように
     $('feed').prepend(noteCard(signed))
     toast('投稿しました')
@@ -338,6 +437,7 @@ async function submitCompose() {
     toast(`投稿に失敗しました: ${e.message}`)
   } finally {
     btn.disabled = false
+    btn.textContent = '投稿'
   }
 }
 
@@ -520,10 +620,17 @@ function revealApp() {
 function closeOverlays() {
   for (const id of ['compose-dialog', 'qr-dialog', 'search-dialog']) {
     const d = $(id)
+    if (!d) continue
+    if (id === 'compose-dialog') {
+      // 自前シート: アニメーションを飛ばして即隠す(iOSスナップショット対策)。
+      d.classList.remove('open')
+      d.hidden = true
+      continue
+    }
     // quick=true: M3のクローズアニメーション(~250-400ms)をスキップし、この
     // タスク内でネイティブのdialogを閉じきる。アニメーション中のフレームを
     // iOSがスナップショットすると結局ダイアログが写るため(review指摘)。
-    if (d?.open) { d.quick = true; d.close() }
+    if (d.open) { d.quick = true; d.close() }
   }
 }
 
@@ -613,8 +720,55 @@ $('compose-fab').addEventListener('click', openCompose)
 $('compose-text').addEventListener('input', (e) => {
   localStorage.setItem(DRAFT_KEY, e.target.value)
 })
-$('compose-cancel').addEventListener('click', () => $('compose-dialog').close())
-$('compose-submit').addEventListener('click', submitCompose)
+$('compose-cancel').addEventListener('click', closeCompose)
+$('compose-image-clear').addEventListener('click', () => {
+  setComposeImage(null)
+  $('compose-image').value = ''
+})
+
+// シートの開閉: .open クラスで CSS トランジション(iOSシート曲線)を回す。
+// 開く前の初期状態も transform: translateY(100%) なので、hidden を外してか
+// ら次フレームで .open を足す(遷移が確実に走るよう2フレーム待つ)。
+function openCompose() {
+  const sheet = $('compose-dialog')
+  if (!sheet) return
+  $('compose-text').value = localStorage.getItem(DRAFT_KEY) || ''
+  setComposeImage(null)
+  $('compose-image').value = ''
+  sheet.hidden = false
+  requestAnimationFrame(() => requestAnimationFrame(() => sheet.classList.add('open')))
+  requestAnimationFrame(() => $('compose-text').focus())
+}
+
+function closeCompose() {
+  const sheet = $('compose-dialog')
+  if (!sheet || sheet.hidden) return
+  sheet.classList.remove('open')
+  setTimeout(() => { sheet.hidden = true }, 300) // scrimフェード(0.28s)後に解除
+}
+
+on('compose-image', 'change', (e) => {
+  const f = e.target.files?.[0]
+  if (!f) { setComposeImage(null); return }
+  if (!IMAGE_TYPES.has(f.type)) {
+    toast('PNG / JPEG / GIF / WebP のみ添付できます')
+    e.target.value = ''
+    setComposeImage(null)
+    return
+  }
+  if (f.size > MAX_IMAGE_BYTES) {
+    toast('写真は10MBまでです')
+    e.target.value = ''
+    setComposeImage(null)
+    return
+  }
+  setComposeImage(f)
+})
+on('compose-scrim', 'click', closeCompose)
+on('compose-submit', 'click', submitCompose)
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !$('compose-dialog').hidden) closeCompose()
+})
 
 $('btn-qr').addEventListener('click', startQr)
 $('qr-cancel').addEventListener('click', () => {
