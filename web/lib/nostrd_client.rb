@@ -127,6 +127,14 @@ class NostrdClient
   def relay_remove(url, client: nil) = op_request(op: "relay_remove", params: { url: url }, client: client)
   def advertise_relays(client: nil)  = op_request(op: "advertise_relays", client: client)
 
+  # Blossom upload (NIP-B7): the daemon signs NIP-98, mirrors locally, then
+  # publishes to public servers. Returns the result frame's data — read
+  # data["url"] for the canonical blob URL. The path must be readable by the
+  # daemon (same machine / user as the PWA process).
+  def blob_put(path)
+    op_request(op: "blob_put", params: { path: path })["data"]
+  end
+
   def lock               = op_request(op: "lock")
   def unlock(passphrase, client: nil) = op_request(op: "unlock", params: { passphrase: passphrase }, client: client)
 
@@ -134,7 +142,11 @@ class NostrdClient
   # client: NIP-46 bunker client pubkey — the daemon gates write ops on an
   # active bunker session for it when bunker mode is enabled.
 
-  def post_note(text, client: nil) = action("post_note", { text: text }, client: client)
+  # tags: extra event tags (NIP-92 imeta for photo posts). The daemon signs
+  # them into the kind-1 event alongside the content.
+  def post_note(text, tags: [], client: nil)
+    action("post_note", { text: text, tags: tags }, client: client)
+  end
 
   # NIP-22: parent is the event being replied to (id/pubkey/kind/tags).
   def post_comment(parent, text, client: nil)

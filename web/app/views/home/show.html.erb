@@ -23,10 +23,24 @@
 <md-dialog id="compose-dialog" class="compose-dialog">
   <div slot="headline">新規投稿</div>
   <div slot="content">
-    <%= form_with url: notes_path, method: :post, id: "compose-form" do |f| %>
-      <%= text_area_tag :text, nil, rows: 4, maxlength: 280, required: true,
+    <%= form_with url: notes_path, method: :post, id: "compose-form",
+          html: { multipart: true } do |f| %>
+      <%= text_area_tag :text, nil, rows: 4, maxlength: 280,
             placeholder: "いま何をしている？", class: "compose-textarea",
             data: { compose_target: "text" } %>
+      <div class="compose-image__preview-row" data-compose-preview-row hidden>
+        <img class="compose-image__preview" alt="" data-compose-preview>
+        <span class="compose-image__name" data-compose-name></span>
+        <md-icon-button type="button" class="compose-image__clear" aria-label="写真を取り消す"
+                        data-compose-clear>
+          <span class="msr">close</span>
+        </md-icon-button>
+      </div>
+      <label class="compose-image">
+        <input type="file" name="image" accept="image/png,image/jpeg,image/gif,image/webp"
+               data-compose-target="image">
+        <span class="msr">image</span><span class="compose-image__label">写真を追加（10MBまで）</span>
+      </label>
     <% end %>
   </div>
   <div slot="actions">

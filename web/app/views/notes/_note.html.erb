@@ -10,6 +10,6 @@
       <span class="tl-item__name" data-profile-name><%= display_name(note["pubkey"]) %></span>
       <span class="tl-item__time"><%= rel_time(note["created_at"]) %></span>
     </span>
-    <span class="tl-item__body"><%= note_content(note["content"]) %></span>
+    <span class="tl-item__body"><%= note_content(note) %></span>
   </a>
 </article>

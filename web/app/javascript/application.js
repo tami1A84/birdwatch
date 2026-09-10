@@ -96,16 +96,25 @@ document.addEventListener("error", (e) => {
 
 // ----- back = reverse transition -------------------------------------------
 // Cross-document view transitions: tag history traversals so the CSS can
-// play the forward transition in reverse (see application.css).
+// play the forward transition in reverse (see application.css). Note pages
+// additionally tag "push": opening a note plays the iOS-style slide-from-
+// right instead of the default M3 fade.
+const NOTE_PAGE = /\/notes\//;
+
 document.addEventListener("pageswap", (e) => {
   if (!e.viewTransition) return;
   const type = e.activation?.navigationType;
+  const dest = e.activation?.entryResult?.url;
+  const push = NOTE_PAGE.test(new URL(dest ?? "", location.href).pathname) ||
+    (type === "traverse" && NOTE_PAGE.test(location.pathname));
   if (type === "traverse") {
     e.viewTransition.types.add("back");
     sessionStorage.setItem("birdwatch.vt", "back");
   } else {
     sessionStorage.setItem("birdwatch.vt", "forward");
   }
+  sessionStorage.setItem("birdwatch.push", push ? "1" : "0");
+  if (push) e.viewTransition.types.add("push");
 });
 
 document.addEventListener("pagereveal", (e) => {
@@ -113,5 +122,9 @@ document.addEventListener("pagereveal", (e) => {
   if (sessionStorage.getItem("birdwatch.vt") === "back") {
     e.viewTransition.types.add("back");
     sessionStorage.setItem("birdwatch.vt", "forward");
+  }
+  if (sessionStorage.getItem("birdwatch.push") === "1") {
+    e.viewTransition.types.add("push");
+    sessionStorage.removeItem("birdwatch.push");
   }
 });

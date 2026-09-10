@@ -140,10 +140,13 @@ class ApplicationController < ActionController::Base
   end
 
   # Escape everything, then re-link plain http(s) URLs. Nostr bech32
-  # identifiers are left as plain text. Image URLs (extension match, or
-  # NIP-92 imeta tags) render as actual <img> elements — lazy, rounded,
-  # linked to the original.
+  # identifiers are left as plain text. Image URLs render as actual <img>
+  # elements — lazy, rounded, linked to the original. Two shapes count as
+  # images: a picture extension (…/x.png) and a bare Blossom blob path
+  # (…/<64-hex sha256>, the canonical URL the daemon returns for uploads —
+  # extensionless by design, so a TUI b-key upload renders as a photo too).
   IMAGE_URL = %r{\Ahttps?://[^\s]+\.(?:png|jpe?g|gif|webp|avif)(?:\?\S*)?\z}i
+  BLOB_URL = %r{\Ahttps?://[^/\s]+/[0-9a-f]{64}\z}i
 
   def note_content(note)
     content, attached =
@@ -157,7 +160,7 @@ class ApplicationController < ActionController::Base
     parts = content.split(%r{(https?://\S+)}).map do |seg|
       if seg.start_with?("http://", "https://")
         u = ERB::Util.html_escape(seg)
-        if seg.match?(IMAGE_URL)
+        if seg.match?(IMAGE_URL) || seg.match?(BLOB_URL)
           shown << seg
           note_image_tag(u)
         else

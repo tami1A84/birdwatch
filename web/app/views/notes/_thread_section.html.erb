@@ -30,9 +30,14 @@
   <h2 class="section-title">返信 <span class="section-title__count"><%= @comments.size %></span></h2>
 
   <div class="reply-box">
-    <%= form_with url: note_comments_path(@note["id"]), method: :post, class: "reply-form" do %>
-      <%= text_area_tag :text, nil, rows: 2, maxlength: 280, required: true,
+    <%= form_with url: note_comments_path(@note["id"]), method: :post, class: "reply-form",
+          html: { multipart: true } do %>
+      <%= text_area_tag :text, nil, rows: 2, maxlength: 280,
             placeholder: "返信を書く…", class: "compose-textarea compose-textarea--compact" %>
+      <label class="compose-image">
+        <input type="file" name="image" accept="image/png,image/jpeg,image/gif,image/webp">
+        <span class="msr">image</span>
+      </label>
       <md-filled-button type="submit" class="reply-form__submit">返信</md-filled-button>
     <% end %>
   </div>
@@ -53,7 +58,7 @@
               <span class="tl-item__name tl-item__name--sm" data-profile-name><%= display_name(c["pubkey"]) %></span>
               <span class="tl-item__time"><%= rel_time(c["created_at"]) %></span>
             </span>
-            <span class="tl-item__body"><%= note_content(c["content"]) %></span>
+            <span class="tl-item__body"><%= note_content(c) %></span>
           </div>
         </article>
       <% end %>
