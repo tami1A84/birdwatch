@@ -2,6 +2,8 @@
 # frozen_string_literal: true
 
 require "optparse"
+require "base64"
+require "json"
 require_relative "../lib/nostr_core/bech32"
 require_relative "../lib/nostrd/store"
 require_relative "../lib/nostrd/server"
@@ -230,10 +232,12 @@ if options[:live]
     store.upsert_my_relay(local_relay.url, read: true, inbox: false, write: true,
                           outbox: false, discover: true)
   end
+  blossom = nil
   if options[:blossom_port] != 0
     require_relative "../lib/nostrd/blossom"
-    Nostrd::Blossom::Server.new(dir: File.expand_path("~/.local/share/nostrd/blobs"),
-                                port: options[:blossom_port]).start
+    blossom = Nostrd::Blossom::Server.new(dir: File.expand_path("~/.local/share/nostrd/blobs"),
+                                          port: options[:blossom_port])
+    blossom.start
   end
   # NIP-17 DM: wrap (needs our key) + addressed publish + unwrap arrivals.
   dm = Nostrd::Dm.new(store: store, socket_db_path: options[:db], my_pubkey: signer.pubkey,
@@ -282,6 +286,26 @@ server = Nostrd::Server.new(store: store, socket_path: options[:socket], signer:
                             unfollow: ->(pk) { orchestrator&.unfollow(pk) },
                             send_dm: ->(pk, text) { dm&.send_dm(text, to: pk) },
                             dms: ->(partner:, limit:) { dm&.dms(partner: partner, limit: limit) || {} },
+                            # b op: blossom upload — mirror to the embedded server
+                            # first, then public servers; NIP-98 auth from our key.
+                            blob_put: lambda { |path|
+                              raise ArgumentError, "no such file: #{path}" unless
+                                File.file?(File.expand_path(path))
+
+                              Nostrd::Blossom.upload_and_mirror(
+                                data: File.binread(File.expand_path(path)),
+                                mime: Nostrd::Blossom.mime_for(path),
+                                auth: lambda { |url, method, sha|
+                                  ev = signer.sign_raw(
+                                    "kind" => 24242, "content" => "",
+                                    "tags" => [["t", "upload"], ["u", "#{url}/upload"],
+                                               ["method", method], ["x", sha],
+                                               ["expiration", (Time.now.to_i + 600).to_s]]
+                                  )
+                                  "Nostr #{Base64.strict_encode64(JSON.generate(ev))}"
+                                },
+                                local_url: (blossom&.running? ? "http://127.0.0.1:#{blossom.port}" : nil))
+                            },
                             # Gossip relay switches: local-only merge (inbox=>read, outbox=>write).
                             relay_flags: ->(p) {
                               o = orchestrator

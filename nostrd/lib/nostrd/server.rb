@@ -11,11 +11,12 @@ module Nostrd
     def initialize(store:, socket_path:, signer: ->(_name, _params) { true }, publisher: nil,
                    info: nil, relay_flags: nil, advertise_relays: nil, relay_remove: nil, lock: nil, unlock: nil, import_key: nil,
                    one_shot: nil, history: 100, bunker: nil,
-                   follow: nil, unfollow: nil, send_dm: nil, dms: nil)
+                   follow: nil, unfollow: nil, send_dm: nil, dms: nil, blob_put: nil)
       @store = store
       @path = socket_path
       @signer = signer
       @publisher = publisher # signed events -> relays (nil = sign only)
+      @blob_put = blob_put # path -> blossom upload result (mirror + public)
       @one_shot = one_shot # direct single-relay publish (Buzz Desktop's baked relay)
       @info = info # -> { "follows" => [...], "relays" => [{url, state}] }
       @relay_flags = relay_flags # gossip switches: {url:, read:, inbox:, write:, outbox:, discover:} -> flags
@@ -137,6 +138,7 @@ module Nostrd
       when "follow" then follow_op(conn, msg)
       when "unfollow" then unfollow_op(conn, msg)
       when "send_dm" then send_dm_op(conn, msg)
+      when "blob_put" then blob_put_op(conn, msg)
       when "delete_note" then delete_note_op(conn, msg)
       when "search" then search_op(conn, msg)
       when "bunker_secret" then bunker_secret_op(conn, msg)
@@ -373,6 +375,18 @@ module Nostrd
     # NIP-17: sign + publish a gift-wrapped kind-14 rumor to the recipient's
     # inbox relays. The Dm service owns the protocol; the daemon owns the
     # keys — clients send intent (pubkey + text), never events.
+    # b op: upload a local file to blossom — embedded mirror first, then
+    # public servers (NIP-98 auth signed by the daemon key). The result
+    # carries the canonical URL (first public hit, local fallback).
+    def blob_put_op(conn, msg)
+      raise ArgumentError, "blob service is not wired" unless @blob_put
+
+      out = @blob_put.call(msg.dig("params", "path").to_s) || {}
+      reply(conn, ev: "result", id: msg["id"], ok: true, data: out)
+    rescue ArgumentError => e
+      reply(conn, ev: "result", id: msg["id"], ok: false, error: e.message)
+    end
+
     def send_dm_op(conn, msg)
       p = msg["params"] || {}
       raise ArgumentError, "send_dm needs text" if p["text"].to_s.empty?

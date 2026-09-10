@@ -88,6 +88,30 @@ module Nostrd
         assert_nil Client.get([fake_url, "http://127.0.0.1:1"], "/#{sha}")
       end
 
+      def test_upload_and_mirror_orders_local_first_then_publics
+        data = "mirror orchestration"
+        seen = []
+        auth = lambda { |url, method, sha|
+          seen << [url, method, sha]
+          auth_header(action: "upload", body: data)
+        }
+        # local mirror survives even when every public server 500s
+        out = Blossom.upload_and_mirror(data: data, mime: "text/plain", auth: auth,
+                                       servers: [fake_url], local_url: local_url)
+        assert_equal Digest::SHA256.hexdigest(data), out["sha"]
+        assert out["local"]
+        assert_empty out["urls"]
+        assert_equal "#{local_url}/#{out['sha']}", out["url"] # local fallback url
+        assert_equal [local_url, fake_url], seen.map(&:first) # mirror first
+        assert seen.all? { |_, m, _| m == "PUT" }
+        # a public hit wins the canonical url
+        seen.clear
+        out2 = Blossom.upload_and_mirror(data: data, mime: "text/plain", auth: auth,
+                                        servers: [local_url], local_url: local_url)
+        assert_equal [local_url], out2["urls"] # server names, not blob urls
+        assert_equal "#{local_url}/#{out2['sha']}", out2["url"]
+      end
+
       def test_loopback_urls_are_detected_private
         assert Client.loopback?("http://127.0.0.1:7778")
         assert Client.loopback?("http://localhost:7778")

@@ -184,6 +184,22 @@ class ServerTest < Minitest::Test
     srv.broadcast_profile("nobody") # unknown -> skip
     assert_equal before, conn.out.size
   end
+
+  def test_blob_put_op_returns_result_with_data
+    srv = Nostrd::Server.new(store: @store, socket_path: "/tmp/x.sock",
+                             blob_put: ->(_p) { { "sha" => "ab" * 32, "url" => "https://s/x", "urls" => ["https://s"], "local" => true } })
+    conn = FakeConn.new
+    srv.send(:dispatch, conn, { "op" => "blob_put", "id" => "b1", "params" => { "path" => "/tmp/f" } })
+    msg = msgs(conn).last
+    assert msg["ok"]
+    assert_equal "ab" * 32, msg.dig("data", "sha")
+    assert_equal "https://s/x", msg.dig("data", "url")
+    # unwired daemon: ok:false, no crash
+    plain = Nostrd::Server.new(store: @store, socket_path: "/tmp/x.sock")
+    conn2 = FakeConn.new
+    plain.send(:dispatch, conn2, { "op" => "blob_put", "id" => "b2", "params" => { "path" => "/tmp/f" } })
+    refute msgs(conn2).last["ok"]
+  end
 end
 
 class FakeOneShot

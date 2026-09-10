@@ -117,6 +117,12 @@ module NostrTui
                params: { partner: partner, limit: limit })
     end
 
+    # Blossom upload: the daemon signs NIP-98, mirrors locally, then publishes
+    # to public servers. The result frame carries the canonical URL.
+    def blob_put(path)
+      transmit(op: "blob_put", id: "bput_#{Time.now.to_i}", params: { path: path })
+    end
+
     # Re-establish the session after a daemon restart: the launcher's first
     # connect does hello + timeline sub + info fetch, so replay all three.
     def reconnect

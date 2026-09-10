@@ -35,7 +35,7 @@ module NostrTui
     # Per-tab status-bar hints (indexed by tab): the relays tab surfaces its
     # own editing keys, follows swaps like/reply for the profile opener.
     HINTS = [
-      "h/l tabs · j/k move · g/G ends · L like · / search · n post · r reply · y yank · o open · q quit",
+      "h/l tabs · j/k move · g/G ends · L like · b upload · n post · r reply · y yank · o open · q quit",
       "h/l tabs · j/k move · g/G ends · o profile · q quit",
       "R/I/W/O/D/S switch · a add · x remove · A advertise · h/l tabs · q quit",
       "Enter open/close · m send · h/l tabs · q quit",

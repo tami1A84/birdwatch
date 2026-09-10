@@ -865,6 +865,24 @@ class TuiTest < Minitest::Test
     assert_equal "send failed: boom", app.instance_variable_get(:@flash)
   end
 
+  def test_blob_upload_ask_send_and_result_flash
+    app = NostrTui::App.new(timeline: NostrTui::Timeline.new)
+    sent = []
+    client = Object.new
+    client.define_singleton_method(:blob_put) { |p| sent << p; true }
+    path = File.join(Dir.tmpdir, "tui-upload-#{Process.pid}.png")
+    File.write(path, "png")
+    app.define_singleton_method(:ask_line) { |_prompt| path }
+    app.send(:blob_upload, client)
+    assert_equal [path], sent # daemon signs, mirrors, publishes
+    assert_equal "uploading #{File.basename(path)}…", app.instance_variable_get(:@flash)
+    app.drain({ "ev" => "result", "id" => "bput_1", "ok" => true,
+                "data" => { "url" => "https://s/ab" } })
+    assert_equal "uploaded: https://s/ab (copied)", app.instance_variable_get(:@flash)
+    app.drain({ "ev" => "result", "id" => "bput_2", "ok" => false, "error" => "boom" })
+    assert_equal "upload failed: boom", app.instance_variable_get(:@flash)
+  end
+
   def test_dead_socket_triggers_throttled_reconnect
     app = NostrTui::App.new(timeline: NostrTui::Timeline.new)
     attempts = 0

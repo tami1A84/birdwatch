@@ -16,6 +16,7 @@ module NostrTui
       :pgup => :page_up, :pgdn => :page_down,
       "/" => :search, "r" => :reply, "n" => :compose,
       "m" => :chat_send, "\r" => :chat_open, # chat tab: send / open-close thread
+      "b" => :blob_put, # blossom upload from anywhere; URL arrives via result
       "L" => :like, # NIP-25 reaction on the selected note
       "R" => :relay_read, "I" => :relay_inbox, "W" => :relay_write,
       "O" => :relay_outbox, "D" => :relay_discover, "S" => :relay_search,
@@ -106,6 +107,14 @@ module NostrTui
           @connect_pending = false
           @bunker_uri = message.dig("data", "uri").to_s
           show_connect_modal if @screen_live
+        elsif message["id"].to_s.start_with?("bput_")
+          url = message.dig("data", "url").to_s
+          if message["ok"] && !url.empty?
+            system("( printf %s #{Shellwords.escape(url)} | wl-copy ) 2>/dev/null")
+            flash("uploaded: #{url} (copied)", ttl: 5)
+          else
+            flash("upload failed: #{message['error']}")
+          end
         end
         true
       when "error" then warn "daemon: #{message['code']}"
@@ -240,6 +249,7 @@ module NostrTui
           relay_command(action, client)
         when :chat_open then chat_enter(client)
         when :chat_send then chat_compose(client)
+        when :blob_put then blob_upload(client)
         end
       end
     ensure
@@ -626,6 +636,19 @@ module NostrTui
       return if text.nil? || text.empty? # ESC = cancel
 
       @client&.send_dm(@chat_partner, text) ? flash("sending…") : flash("offline?")
+    end
+
+    # b anywhere: upload a local file to blossom via the daemon (NIP-98
+    # signed there, mirrored to the embedded server, published to publics).
+    # The result frame (bput_ id) lands the URL in the flash + clipboard.
+    def blob_upload(client)
+      path = ask_line("file to upload: ")
+      return if path.nil? || path.strip.empty? # ESC = cancel
+
+      path = File.expand_path(path.strip)
+      return flash("no such file: #{path}") unless File.file?(path)
+
+      client&.blob_put(path) ? flash("uploading #{File.basename(path)}…") : flash("offline?")
     end
 
     def settings_action(key, client)

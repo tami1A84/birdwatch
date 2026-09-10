@@ -15,6 +15,56 @@ module Nostrd
     # Any NIP-98 auth failure; maps to 401 at the dispatch layer.
     class AuthError < StandardError; end
 
+    # Public servers tried in order by upload_and_mirror / tooling. One
+    # success per blob is enough for serving; two copies are kept.
+    DEFAULT_SERVERS = %w[
+      https://files.sovbit.host
+      https://nostr.download
+      https://cdn.nostrcheck.me
+      https://blossom.primal.net
+    ].freeze
+
+    LOCAL_URL = "http://127.0.0.1:7778"
+
+    # Client for remote Blossom servers (NIP-B7/BUD-02). Public servers carry
+    # mirror to the embedded server first (restore survives an aborted run),
+    # then public servers until `copies` accepted. auth is a callable
+    # (url, method, body_sha) → Authorization header value; signing stays
+    # with the daemon key. Returns a result hash, never raises on server
+    # failures (mirrors the best-effort CLI loop).
+    def self.upload_and_mirror(data:, mime:, auth:, servers: DEFAULT_SERVERS,
+                               local_url: LOCAL_URL, copies: 2)
+      sha = Digest::SHA256.hexdigest(data)
+      local_ok = false
+      if local_url
+        local_ok, = Client.put(local_url, "/upload", body: data, mime: mime,
+                               auth: auth.call(local_url, "PUT", sha))
+      end
+      urls = []
+      Array(servers).each do |server|
+        ok, = Client.put(server, "/upload", body: data, mime: mime,
+                         auth: auth.call(server, "PUT", sha))
+        urls << server if ok
+        break if urls.size >= copies
+      end
+      { "sha" => sha, "urls" => urls, "local" => local_ok,
+        "url" => (urls.first ? "#{urls.first.sub(%r{/+\z}, '')}/#{sha}" : (local_ok ? "#{local_url}/#{sha}" : nil)) }
+    end
+
+    MIME = {
+      ".html" => "text/html", ".htm" => "text/html", ".js" => "text/javascript",
+      ".mjs" => "text/javascript", ".css" => "text/css", ".json" => "application/json",
+      ".webmanifest" => "application/manifest+json", ".png" => "image/png",
+      ".jpg" => "image/jpeg", ".jpeg" => "image/jpeg", ".gif" => "image/gif",
+      ".svg" => "image/svg+xml", ".webp" => "image/webp", ".ico" => "image/x-icon",
+      ".txt" => "text/plain", ".woff" => "font/woff", ".woff2" => "font/woff2",
+      ".map" => "application/json", ".xml" => "application/xml"
+    }.freeze
+
+    def self.mime_for(path)
+      MIME[File.extname(path.to_s).downcase] || "application/octet-stream"
+    end
+
     # Embedded content-addressed blob server (NIP-B7 basics over BUD-02):
     #   PUT /upload                 NIP-98 kind-24242 auth; sha256 of the body
     #                               becomes the name; identical bytes dedupe
