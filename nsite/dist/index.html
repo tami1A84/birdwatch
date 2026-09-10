@@ -8,7 +8,10 @@
   <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#141317">
   <title>birdwatch</title>
   <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <!-- black-translucent: standalone でステータスバー領域にページ背景を透過
+      させる。app-bar の safe-area-inset-top パディング(nsite style block)
+       とセット。タブ表示には影響しない。 -->
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="birdwatch">
   <link rel="manifest" href="./manifest.webmanifest">
   <link rel="icon" href="./favicon.ico" sizes="16x16 32x32 48x48">
@@ -59,6 +62,21 @@
          search in the app bar, no home tab. Zeroing --navbar-h makes the
          shared style.css content/FAB/toast offsets hug the bottom edge. */
     :root { --navbar-h: 0px; }
+    /* 2026-09-10 N round 2: 「最初に開いた画面がすでに壊れている」対処。
+       スタンドアロンPWA(ホーム画面追加)では viewport-fit=cover のせいで
+       コンテンツがステータスバー/ノッチの下まで伸びるが、app-bar は top
+       inset を考慮しておらず、タイトル/検索/設定ボタンが時計とバッテリー
+       表示の下に潜る。bar を inset 分だけ高くして中身をその下に置く。
+       Safari のタブ表示では env()=0 のため見た目は一切変わらない。 */
+    .app-bar {
+      height: calc(var(--appbar-h) + env(safe-area-inset-top, 0px));
+      padding-top: env(safe-area-inset-top, 0px);
+    }
+
+    /* 同 round 2: default は iOS が不透明な system bar を上に置く(ダーク
+       モードで白帯)。black-translucent ならステータスバー領域はページの
+       背景(上の .app-bar の inset パディング)が見える — 上のパディング
+       修正とセットで初めて成立する。タブ表示では無効の meta。 */
     .app-bar__logo { border-radius: 10px; }
     .app-bar__brand { border-radius: 11px; }
 
