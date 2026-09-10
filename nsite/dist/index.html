@@ -77,6 +77,17 @@
        renders nothing) and the rule stops matching. */
     md-dialog:not(:defined) { display: none !important; }
 
+    /* 2026-09-10 N: Safariで投稿ダイアログが潰れる。Material md-dialog は host に
+       width: fit-content(max-width: min(560px, 100% - 48px))を張り、内側の
+       <dialog> へ width: inherit で流す。WebKit は fit-content の intrinsic 計算で
+       content スロットの textarea(cols 既定20 ≈ 244px)までダイアログごと縮める
+       (Chromium は 342px で伸びる)。host にビューポート基準の幅を明示すると
+       inherit 経由で <dialog> にそのまま乗り、intrinsic 計算を通らない。
+       外側(作者)スタイルはシャドウの :host ルールに勝つ。
+       style.css は Rails アプリとバイト一致させるため、この対処は nsite のみ
+       (:3000 側は同潜在バグあり)。 */
+    md-dialog { width: min(560px, calc(100vw - 48px)); }
+
     /* 2026-09-07 N round 3: 起動の瞬間にQR/投稿/検索ダイアログの中身が一瞬
        見えることがある。v11の :not(:defined) ルールは「未アップグレードの
        ダイアログ」だけを覆う。ここではさらに広げて、app.js が最初の実状態
