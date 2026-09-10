@@ -44,6 +44,39 @@ class TuiTest < Minitest::Test
     assert_equal ["n"], tl.filter("abab").map(&:id)      # still by pubkey
   end
 
+  # Per-frame profile pushes relabel only the touched author's events; an
+  # unchanged snapshot is a no-op (boot replays must not cost O(N) each).
+  def test_profile_frames_relabel_only_touched_authors
+    tl = NostrTui::Timeline.new
+    tl.add_h({ "id" => "n1", "pubkey" => "ab" * 16, "created_at" => 100, "kind" => 1, "content" => "a" })
+    tl.add_h({ "id" => "n2", "pubkey" => "cd" * 16, "created_at" => 200, "kind" => 1, "content" => "b" })
+
+    alice = { "pubkey" => "ab" * 16, "display_name" => "Alice" }
+    assert_equal ["ab" * 16], tl.apply_profiles([alice]) # returns touched pubkeys
+    assert_equal "Alice", tl.find("n1").author_short
+    assert_equal "cdcdcdcd", tl.find("n2").author_short # untouched author keeps short pk
+
+    assert_empty tl.apply_profiles([alice.dup])          # identical snapshot: no-op
+    assert_equal "Alice", tl.find("n1").author_short
+
+    assert_equal ["ab" * 16], tl.apply_profiles([{ "pubkey" => "ab" * 16, "display_name" => "Alicia" }])
+    assert_equal "Alicia", tl.find("n1").author_short
+    assert_equal "cdcdcdcd", tl.find("n2").author_short
+  end
+
+  # all is memoized between mutations — every keystroke repaint used to
+  # re-sort the whole timeline.
+  def test_all_is_cached_until_timeline_changes
+    tl = NostrTui::Timeline.new
+    tl.add_h({ "id" => "b", "pubkey" => "bb" * 16, "created_at" => 200, "kind" => 1, "content" => "newer" })
+    first = tl.all
+    assert_same first, tl.all # no mutation -> same sorted array
+
+    tl.add_h({ "id" => "a", "pubkey" => "aa" * 16, "created_at" => 100, "kind" => 1, "content" => "older" })
+    refute_same first, tl.all
+    assert_equal %w[b a], tl.all.map(&:id) # re-sorted after the add
+  end
+
   def test_wrap_widths_paragraphs_and_hard_chop
     r = NostrTui::Renderer.new
     w = ->(text, width) { r.send(:wrap, text, width) }
@@ -247,18 +280,18 @@ class TuiTest < Minitest::Test
                          "nip05" => "a@zaps.lol" }])
     app = NostrTui::App.new(timeline: tl)
     app.drain({ "ev" => "info", "follows" => ["aa" * 32],
-                "relays" => [{ "url" => "wss://r.example", "state" => "connected" }] })
+                "relays" => [{ "url" => "wss://r.example", "state" => "connected", "mine" => true }] })
     app.set_tab(1)
     assert_equal 1, app.instance_variable_get(:@tab)
     follows = app.send(:list_items)
     assert_equal "Alice", follows.first[:label] # profile-resolved
     assert_equal "a@zaps.lol", follows.first[:sub]
     app.set_tab(2)
-    assert_equal "wss://r.example", app.send(:list_items).first[:label]
-    app.set_tab(4)
+    assert_equal "wss://r.example", app.send(:list_items)[1][:label] # under the section header
+    app.set_tab(3)
     assert app.send(:list_items).first[:label].include?("birdwatch")
     app.set_tab(-1) # wraps to the last tab
-    assert_equal 4, app.instance_variable_get(:@tab)
+    assert_equal 3, app.instance_variable_get(:@tab)
     app.set_tab(0)
     assert_nil app.selected_event # home is empty here
     assert_equal 0, app.instance_variable_get(:@selected)
@@ -346,25 +379,32 @@ class TuiTest < Minitest::Test
                                 "relays" => [
                                   { "url" => "wss://nos.lol", "state" => "connected",
                                     "read" => true, "inbox" => true, "write" => true,
-                                    "outbox" => false, "discover" => false },
-                                  { "url" => "wss://nostr.wine", "state" => "offline",
-                                    "read" => false, "inbox" => false, "write" => true,
-                                    "outbox" => true, "discover" => true }
+                                    "outbox" => false, "discover" => false, "mine" => true },
+                                  { "url" => "wss://nostr.wine", "state" => "connected",
+                                    "covers" => 12, "mine" => false }
                                 ]
                               })
 
     rows = app.send(:relays_items)
-    assert_equal "R I W - - -", rows[0][:sub]
-    assert_equal "- - W O D -", rows[1][:sub]
-    assert_equal true, rows[0][:up]
-    assert_equal false, rows[1][:up]
-    assert_equal "connected", rows[0][:right]
+    # Sectioned view: my configured relays first (switchable), then the
+    # gossip-discovered dials the picker opened by itself — plain rows,
+    # no explanatory sub-text, no 担当 suffix.
+    assert_equal "my relays (NIP-65)", rows[0][:label]
+    assert_equal "R I W - - -", rows[1][:sub]
+    assert_equal true, rows[1][:up]
+    assert_equal "connected", rows[1][:right]
+    assert_equal "discovered (gossip)", rows[2][:label]
+    assert_nil rows[2][:sub], "section headers carry no explanation"
+    assert_equal "  wss://nostr.wine", rows[3][:label]
+    assert_equal true, rows[3][:up]
+    assert_equal "connected", rows[3][:right], "plain state — covers is not shown"
+    assert_nil rows[3][:url], "gossip rows carry no url — switches refuse them"
 
     r = NostrTui::Renderer.new
-    up = r.send(:list_row, rows[0], 60, selected: false)
-    down = r.send(:list_row, rows[1], 60, selected: false)
+    up = r.send(:list_row, rows[1], 60, selected: false)
+    down = r.send(:list_row, rows[3], 60, selected: false)
     assert up.text.include?("wss://nos.lol") && up.text.include?("R I")
-    assert down.text.include?("○ "), "offline relay renders a hollow dot"
+    assert down.text.include?("wss://nostr.wine") && down.text.include?("connected")
     assert !up.text.include?("○ ")
   end
 
@@ -373,7 +413,7 @@ class TuiTest < Minitest::Test
   def test_relay_switch_toggles_and_advertise
     app = NostrTui::App.new(timeline: NostrTui::Timeline.new)
     app.instance_variable_set(:@info, {
-                                "relays" => [{ "url" => "wss://nos.lol", "state" => "connected",
+                                "relays" => [{ "url" => "wss://nos.lol", "state" => "connected", "mine" => true,
                                                "read" => true, "inbox" => false, "write" => true,
                                                "outbox" => false, "discover" => false }]
                               })
@@ -387,8 +427,8 @@ class TuiTest < Minitest::Test
     client.define_singleton_method(:advertise_relays) { sent << :adv; true }
     client.define_singleton_method(:relay_remove) { |url| sent << [:rm, url]; true }
 
-    # inbox on -> read stays on, message flashes
-    app.instance_variable_set(:@selected, 0)
+    # inbox on -> read stays on, message flashes (row 1: under the header)
+    app.instance_variable_set(:@selected, 1)
     app.send(:relay_command, :relay_inbox, client)
     assert_equal ["wss://nos.lol", { read: true, inbox: true, write: true,
                                      outbox: false, discover: false, search: false }], sent.first
@@ -612,19 +652,64 @@ class TuiTest < Minitest::Test
     assert NostrTui::Renderer.dw(relays.text) <= 120
   end
 
-  # Settings tab: three rows only — brand, profile (e), nostr connect (o).
+  # Settings tab rows: brand, profile (e), nostr connect (o), the blossom
+  # server list (NIP-B7, rendered as rows under its header), then
+  # unlock/logout/import.
   def test_settings_tab_rows
     app = NostrTui::App.new(timeline: NostrTui::Timeline.new)
     app.instance_variable_set(:@info, { "me" => "ab" * 16,
                                         "my_profile" => { "name" => "ロクヨウ" } })
     rows = app.send(:settings_items).map { |i| i[:label] }
-    assert_equal ["birdwatch 0.1", "profile", "nostr connect", "logout", "import key"], rows
-    # locked daemon: an unlock row appears between connect and logout
+    assert_equal ["birdwatch 0.1", "profile", "nostr connect",
+                  "blossom servers", "  (未取得 — F で取得)",
+                  "logout", "import key"], rows
+    # locked daemon: an unlock row appears between the blossom rows and logout
     app.instance_variable_set(:@info, { "locked" => true })
-    assert_equal "unlock", app.send(:settings_items)[3][:label]
+    assert_equal "unlock", app.send(:settings_items)[5][:label]
     app.instance_variable_set(:@info, { "me" => "ab" * 16,
                                         "my_profile" => { "name" => "ロクヨウ" } })
     assert_equal "ロクヨウ", app.send(:settings_items)[1][:sub]
+  end
+
+  # The blossom rows mirror the daemon-reported list: one URL per row once
+  # fetched, a distinct hint when the user has no servers at all.
+  def test_settings_tab_blossom_rows
+    app = NostrTui::App.new(timeline: NostrTui::Timeline.new)
+    app.instance_variable_set(:@blossom_servers,
+                              ["https://blossom.westernbtc.com", "https://nostr.download"])
+    labels = app.send(:settings_items).map { |i| i[:label] }
+    assert_equal ["https://blossom.westernbtc.com", "https://nostr.download"],
+                 labels[labels.index("blossom servers") + 1, 2]
+    app.instance_variable_set(:@blossom_servers, [])
+    assert_equal "  (サーバーなし — E で追加)", app.send(:settings_items)[4][:label]
+  end
+
+  # Posting path: submit_note routes a root note to post_note and a reply
+  # to the NIP-22 post_comment (tags come from the event being replied to).
+  # compose_inline itself is interactive (ask_line); this is its seam.
+  def test_submit_note_routes_root_and_reply
+    app = NostrTui::App.new(timeline: NostrTui::Timeline.new)
+    calls = []
+    client = Object.new
+    client.define_singleton_method(:post_note) { |t| calls << [:note, t] }
+    client.define_singleton_method(:post_comment) { |t, **kw| calls << [:comment, t, kw] }
+
+    app.send(:submit_note, "hello world", nil, client)
+    assert_equal [[:note, "hello world"]], calls
+    assert_equal "sending…", app.instance_variable_get(:@flash)
+
+    reply_to = Object.new
+    def reply_to.id = "ab" * 32
+    def reply_to.pubkey = "cd" * 32
+    def reply_to.kind = 1
+    def reply_to.tags = [["e", "ab" * 32]]
+    app.send(:submit_note, "nice!", reply_to, client)
+    assert_equal 2, calls.size
+    assert_equal :comment, calls[1][0]
+    assert_equal "nice!", calls[1][1]
+    assert_equal({ id: "ab" * 32, pubkey: "cd" * 32, kind: 1, tags: [["e", "ab" * 32]] },
+                 calls[1][2])
+    assert_equal "reply sent", app.instance_variable_get(:@flash)
   end
 
   # Settings tab: o on the "nostr connect" row asks the daemon for its
@@ -633,7 +718,7 @@ class TuiTest < Minitest::Test
   # goes out and the row-keyed routing picks the connect row only.
   def test_open_on_settings_tab_requests_bunker_uri
     app = NostrTui::App.new(timeline: NostrTui::Timeline.new)
-    app.instance_variable_set(:@tab, 4) # settings moved behind chat
+    app.instance_variable_set(:@tab, 3) # settings
     sent = []
     client = Object.new
     client.define_singleton_method(:bunker_secret) { sent << :bsec }
@@ -661,7 +746,7 @@ class TuiTest < Minitest::Test
   # Settings actions are ROW-keyed: e/o/s/u/i act on the selected row only.
   def test_settings_actions_are_row_keyed
     app = NostrTui::App.new(timeline: NostrTui::Timeline.new)
-    app.instance_variable_set(:@tab, 4) # settings moved behind chat
+    app.instance_variable_set(:@tab, 3) # settings
     app.instance_variable_set(:@selected, 1) # profile row
     edited = []
     app.define_singleton_method(:profile_edit) { |c| edited << c }
@@ -795,74 +880,6 @@ class TuiTest < Minitest::Test
     app.send(:request_connect_qr, nil)
     assert_equal false, app.instance_variable_get(:@connect_pending)
     assert_equal "daemon に接続できません", app.instance_variable_get(:@flash)
-  end
-
-  # --- chat tab (NIP-17 DMs) ---
-
-  def test_chat_conversations_frame_populates_chat_rows
-    app = NostrTui::App.new(timeline: NostrTui::Timeline.new)
-    app.drain({ "ev" => "info", "follows" => [], "relays" => [],
-                "me" => "aa" * 32, "profiles" => [{ "pubkey" => "bb" * 32, "name" => "Bob" }] })
-    app.set_tab(3) # first fetch: dms_1, no client attached (no-op)
-    app.drain({ "ev" => "conversations", "sub" => "dms_1",
-                "conversations" => [{ "pubkey" => "bb" * 32, "count" => 2,
-                                      "last" => { "content" => "hello", "created_at" => 1_700_000_000 } }] })
-    rows = app.send(:list_items)
-    assert_equal "Bob", rows.first[:label]     # profile-resolved partner
-    assert_equal "hello", rows.first[:sub]     # newest message preview
-    assert_equal "2", rows.first[:right]       # message count
-    assert_equal "bb" * 32, rows.first[:pubkey]
-  end
-
-  def test_chat_thread_routes_dm_events_and_marks_direction
-    app = NostrTui::App.new(timeline: NostrTui::Timeline.new)
-    me = "aa" * 32
-    app.drain({ "ev" => "info", "follows" => [], "relays" => [], "me" => me,
-                "profiles" => [{ "pubkey" => "bb" * 32, "name" => "Bob" }] })
-    app.set_tab(3) # dms_1
-    app.drain({ "ev" => "conversations", "sub" => "dms_1",
-                "conversations" => [{ "pubkey" => "bb" * 32, "count" => 1,
-                                      "last" => { "content" => "hello", "created_at" => 10 } }] })
-    app.instance_variable_set(:@selected, 0)
-    app.send(:chat_enter, nil) # opens the thread, fetch rides dms_2
-    assert_equal "bb" * 32, app.instance_variable_get(:@chat_partner)
-    app.drain({ "ev" => "event", "sub" => "dms_2",
-                "event" => { "id" => "e1", "pubkey" => "bb" * 32, "kind" => 14,
-                             "content" => "hello", "created_at" => 10, "tags" => [] } })
-    app.drain({ "ev" => "event", "sub" => "dms_2",
-                "event" => { "id" => "e2", "pubkey" => me, "kind" => 14,
-                             "content" => "hi bob", "created_at" => 11, "tags" => [] } })
-    rows = app.send(:list_items)
-    assert_equal "Bob", rows[0][:label] # from the partner
-    assert_equal "me", rows[1][:label]  # from us
-    assert_equal "hi bob", rows[1][:sub]
-    assert_empty app.send(:visible_events) # dm frames never leak to the timeline
-    # a thread fetch never resolves with a partner unset: guard the routing
-    app.instance_variable_set(:@chat_partner, nil)
-    app.drain({ "ev" => "event", "sub" => "dms_2",
-                "event" => { "id" => "e3", "pubkey" => me, "kind" => 14,
-                             "content" => "late", "created_at" => 12, "tags" => [] } })
-    assert_equal 0, app.send(:visible_events).size
-  end
-
-  def test_chat_send_dm_and_ack_triggers_refetch
-    app = NostrTui::App.new(timeline: NostrTui::Timeline.new)
-    calls = []
-    client = Object.new
-    client.define_singleton_method(:send_dm) { |pk, text| calls << [:send, pk, text]; true }
-    client.define_singleton_method(:dms) { |**kw| calls << [:dms, kw[:partner]]; true }
-    app.attach(client)
-    app.instance_variable_set(:@tab, 3)
-    app.instance_variable_set(:@chat_partner, "bb" * 32)
-    app.define_singleton_method(:ask_line) { |_prompt| "もお" }
-    app.send(:chat_compose, client)
-    assert_equal [:send, "bb" * 32, "もお"], calls.first
-    n = calls.size
-    app.drain({ "ev" => "ack", "id" => "dmsend_1", "ok" => true, "event_id" => "e" * 64 })
-    assert_operator calls.size, :>, n # ack ok -> thread refetch
-    # failed send surfaces the daemon error instead of refetching
-    app.drain({ "ev" => "ack", "id" => "dmsend_2", "ok" => false, "error" => "boom" })
-    assert_equal "send failed: boom", app.instance_variable_get(:@flash)
   end
 
   def test_blob_upload_ask_send_and_result_flash

@@ -34,8 +34,9 @@ curses gem 未導入なら `gem install curses`(ncurses dev が必要)。テス�
 | PgUp / PgDn | ページ移動 |
 | Enter | 展開(全文+npub+時刻)※次の一手 |
 | / | インクリメンタル検索 |
-| r | 返信(composer、RE: ヘッダの下 = 2行目にカーソル) |
-| n | 新規投稿($EDITOR を tmpfile で起動) |
+| r | 返信(インラインプロンプト。選択noteに NIP-22 コメント) |
+| n | 新規投稿(インラインプロンプト — 画面は閉じない) |
+| N | 長文投稿($EDITOR を tmpfile で起動。Esc/空でキャンセル) |
 | L | いいね(NIP-25。自分の 👍 だけを表示) |
 | y | note id を yank |
 | o | 開く — timeline: リンク / follows: npub.world / settings: 選択行ごと(birdwatch → GitHub、nostr connect → QR) |
@@ -43,8 +44,9 @@ curses gem 未導入なら `gem install curses`(ncurses dev が必要)。テス�
 | u | vault アンロック(settings の unlock 行で。入力はマスク) |
 | s | ログアウト = daemon signer をロック(settings の logout 行で) |
 | i | 秘密鍵インポート(nsec または hex + 新パスフレーズで vault を再暗号化) |
-| R / I / W / O / D / S | リレー種別切替(read / inbox / write / outbox / discover / search) |
+| R / I / W / O / D / S | リレー種別切替(read / inbox / write / outbox / discover / search)。「my relays (NIP-65)」セクションの行のみ。discovered (gossip) は表示専用(RelayPicker が各フォロイーの kind 10002 と取得実績から自動選択・接続したリレー。割当が外れると自動切断) |
 | a / x | リレー追加 / 削除 |
+| F / E / P | ブロッサムサーバー一覧: 取得 / 編集($EDITOR、~/.config/nostrd/blossom.json) / kind 10063 で公開(NIP-B7)。設定タブにサーバー一覧を常に表示 |
 | A | 現在のリレー一覧を kind 10002 で広告 |
 | q / ESC | 終了 |
 

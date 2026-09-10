@@ -15,17 +15,18 @@ module NostrTui
       "1" => :tab1, "2" => :tab2, "3" => :tab3, "4" => :tab4,
       :pgup => :page_up, :pgdn => :page_down,
       "/" => :search, "r" => :reply, "n" => :compose,
-      "m" => :chat_send, "\r" => :chat_open, # chat tab: send / open-close thread
       "b" => :blob_put, # blossom upload from anywhere; URL arrives via result
+      "N" => :compose_editor, # long-form post in $EDITOR (n is the quick one)
       "L" => :like, # NIP-25 reaction on the selected note
       "R" => :relay_read, "I" => :relay_inbox, "W" => :relay_write,
       "O" => :relay_outbox, "D" => :relay_discover, "S" => :relay_search,
       "a" => :relay_add, "x" => :relay_remove, "A" => :relay_advertise,
+      "F" => :blossom_fetch, "E" => :blossom_edit, "P" => :blossom_publish,
       "y" => :yank, "o" => :open, "e" => :profile_edit, "s" => :signout,
       "i" => :import_key, "u" => :unlock,
       "q" => :quit, 27 => :quit # ESC
     }.freeze
-    NOUNS = %w[notes follows relays dms items].freeze
+    NOUNS = %w[notes follows relays items].freeze
     GITHUB_URL = "https://github.com/tami1A84/birdwatch" # settings: birdwatch row + o
 
     # curses color pairs (cyan accent on the default bg; every pair — PANEL
@@ -52,11 +53,6 @@ module NostrTui
       @modal = nil        # NIP-46 connect QR overlay (hash: uri/qr/width)
       @connect_pending = false
       @bunker_uri = nil
-      @chat_partner = nil # nil = conversation list; pubkey = open thread
-      @chat_convs = []    # [{pubkey, last, count}] from the dms channel
-      @chat_msgs = []     # open thread's kind-14 rumors, oldest first
-      @chat_fetch = nil   # sub id of the in-flight dms fetch
-      @dm_seq = 0
       @reconnect_at = nil # throttle for the dead-socket redial loop
       @screen_live = false # run() flips this once curses owns a real screen
     end
@@ -66,17 +62,7 @@ module NostrTui
     def drain(message)
       case message["ev"]
       when "event"
-        # dms-channel event frames carry the fetch's sub id; route them to
-        # the open thread instead of the home timeline (kind-14 rumors are
-        # DM content, not feed notes).
-        if message["sub"].to_s.start_with?("dms_") && message["sub"] == @chat_fetch
-          @chat_msgs << message["event"] if @chat_partner && message["event"]
-          @chat_msgs.sort_by! { |r| r["created_at"].to_i }
-        else
-          @timeline.add_h(message["event"])
-        end
-      when "conversations"
-        @chat_convs = message["conversations"] || [] if message["sub"] == @chat_fetch
+        @timeline.add_h(message["event"])
       when "profiles" then @timeline.apply_profiles(message["profiles"] || [])
       when "info"
         @info = { "follows" => message["follows"] || [],
@@ -88,15 +74,23 @@ module NostrTui
         # the daemon serves stored metadata with the list so names render
         # right after a restart instead of waiting for live kind-0 traffic.
         @timeline.apply_profiles(message["profiles"] || [])
+        @blossom_servers = message["blossom"]
       when "eod", "ack"
         # bunker_secret failures arrive as ack(ok:false) with the bsec_ id.
         if message["ev"] == "ack"
           if !message["ok"] && message["id"].to_s.start_with?("bsec_")
             @connect_pending = false
             flash("bunker URI: #{message['error']}")
-          elsif message["id"].to_s.start_with?("dmsend_")
-            # Our rumor is stored daemon-side; pull the refreshed thread.
-            message["ok"] ? refresh_chat : flash("send failed: #{message['error']}")
+          elsif message["id"].to_s.start_with?("badv_")
+            # kind 10063 publish ack from the daemon.
+            if message["ok"]
+              n = message["published_to"].to_i
+              flash(n.positive? ? "blossom list を公開 (#{n} リレー)" : "blossom list 公開: リレー未接続", ttl: 6)
+            else
+              flash("blossom 公開失敗: #{message['error']}")
+            end
+          elsif message["id"].to_s.start_with?("bset_")
+            flash(message["ok"] ? "blossom list 保存 — P で公開" : "blossom 保存失敗: #{message['error']}")
           end
         end
         true
@@ -107,6 +101,10 @@ module NostrTui
           @connect_pending = false
           @bunker_uri = message.dig("data", "uri").to_s
           show_connect_modal if @screen_live
+        elsif message["id"].to_s.start_with?("bfetch_")
+          servers = Array(message.dig("data", "servers"))
+          @blossom_servers = servers
+          flash(servers.empty? ? "blossom: none" : servers.join(" "), ttl: 8)
         elsif message["id"].to_s.start_with?("bput_")
           url = message.dig("data", "url").to_s
           if message["ok"] && !url.empty?
@@ -117,9 +115,49 @@ module NostrTui
           end
         end
         true
-      when "error" then warn "daemon: #{message['code']}"
+      when "error"
+        warn "daemon: #{message['code']}"
+        # Old daemon without the blossom ops: make the gap visible in-TUI
+        # instead of only on stderr (the reply carries no id to correlate).
+        flash("daemon: #{message['message'] || message['code']} — nostrd の再起動が必要?") if
+          message["code"] == "unknown_op"
       end
       clamp_selection
+    end
+
+    # --- blossom server list (NIP-B7 kind 10063), settings tab ----------
+    # F: fetch the current list (daemon: override file → published event →
+    # defaults). E: edit in $EDITOR, saved to ~/.config/nostrd/blossom.json.
+    # P: sign + publish the current list as kind 10063 to write relays.
+    # The list also renders as rows in the settings tab (settings_items).
+    def blossom_fetch(client)
+      return flash("設定タブで実行してください") unless @tab == 3
+
+      client&.blossom_servers
+      flash("blossom list を取得中…")
+    end
+
+    def blossom_edit
+      return flash("設定タブで実行してください") unless @tab == 3
+
+      tmp = File.join(ENV.fetch("TMPDIR", "/tmp"), "blossom-servers.json")
+      File.write(tmp, JSON.pretty_generate(@blossom_servers || []))
+      system("#{ENV['EDITOR'] || 'vi'} #{tmp}")
+      servers = JSON.parse(File.read(tmp)).map(&:to_s)
+                     .select { |u| u.match?(%r{\Ahttps?://\S+\z}) }.uniq
+      return flash("blossom edit cancelled") if servers.empty?
+
+      client&.blossom_set(servers)
+      flash("blossom list saved (#{servers.size}) — P to publish")
+    rescue StandardError => e
+      flash("blossom edit failed: #{e.message}")
+    end
+
+    def blossom_publish(client)
+      return flash("設定タブで実行してください") unless @tab == 3
+
+      ok = client&.advertise_blossom
+      return flash(ok ? "kind 10063 を公開中…" : "公開失敗 (daemon未接続?)")
     end
 
     def visible_events = @timeline.filter(@query)
@@ -156,7 +194,6 @@ module NostrTui
       @first_visible = 0
       @selected_id = nil
       @client&.request_info
-      refresh_chat if @tab == 3 # chat: re-pull list or the open thread
     end
 
     # --- curses (requires a TTY and the curses gem) ---
@@ -230,16 +267,20 @@ module NostrTui
         when :page_up then move(-page_step)
         when :page_down then move(page_step)
         when :yank then yank
-        when :open then @tab == 4 ? settings_action('o', client) : open_link
+        when :open then @tab == 3 ? settings_action('o', client) : open_link
         when :search
           if @tab.zero?
             q = ask_line("search: ")
             search(q) unless q.nil? # ESC = cancel (keep filter); empty Enter = clear
           end
-        when :compose then compose(client, reply_to: nil)
-        when :reply then compose(client, reply_to: selected_event)
+        when :compose then compose_inline(client)
+        when :reply then compose_inline(client, reply_to: selected_event)
+        when :compose_editor then compose(client, reply_to: nil)
         when :like then like(client)
         when :profile_edit then settings_action("e", client)
+        when :blossom_fetch then blossom_fetch(client)
+        when :blossom_edit then blossom_edit
+        when :blossom_publish then blossom_publish(client)
         when :signout then settings_action("s", client)
         when :import_key then settings_action("i", client)
         when :unlock then settings_action("u", client)
@@ -247,8 +288,6 @@ module NostrTui
              :relay_discover, :relay_search, :relay_add, :relay_remove,
              :relay_advertise
           relay_command(action, client)
-        when :chat_open then chat_enter(client)
-        when :chat_send then chat_compose(client)
         when :blob_put then blob_upload(client)
         end
       end
@@ -376,15 +415,24 @@ module NostrTui
       end
     end
 
+    # Frames are drained with a time budget, not until the queue runs dry:
+    # at boot the daemon streams a burst of history + profile frames, and
+    # draining it all in one tick froze keystrokes for seconds (the queue
+    # refilled as fast as it emptied). ~20ms of work per loop keeps the
+    # backlog draining at up to 50 slices/s while getch stays responsive.
+    DRAIN_BUDGET = 0.02
+
     def drain_socket(client)
       return unless client
 
       retry_reconnect(client) # a daemon restart must not strand the session
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + DRAIN_BUDGET
       while client.messages.length.positive?
         msg = client.messages.shift(true) rescue break
         next if msg.nil?
 
         drain(msg)
+        return if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
       end
     end
 
@@ -461,8 +509,7 @@ module NostrTui
       case @tab
       when 1 then follows_items
       when 2 then relays_items
-      when 3 then chat_items
-      when 4 then settings_items
+      when 3 then settings_items
       else []
       end
     end
@@ -480,17 +527,33 @@ module NostrTui
     # D discover · S search); inactive ones render as "-". Keys: R I W O D S
     # toggle, a add, x remove, A advertise.
     def relays_items
-      (@info["relays"] || []).map do |r|
-        switches = %w[read inbox write outbox discover search]
-                   .map { |k| r[k] == true ? k[0].upcase : "-" }
-                   .join(" ")
-        { label: r["url"].to_s, sub: switches,
-          right: r["state"].to_s, up: r["state"] == "connected",
-          url: r["url"].to_s,
-          "read" => r["read"] == true, "inbox" => r["inbox"] == true,
-          "write" => r["write"] == true, "outbox" => r["outbox"] == true,
-          "discover" => r["discover"] == true, "search" => r["search"] == true }
+      # Two sections: the user's configured relays (NIP-65 / local config,
+      # switchable R/I/W/O/D/S) vs gossip-discovered dials the picker opened
+      # to reach followed people (read-only rows — no switches to flip).
+      mine, gossip = (@info["relays"] || []).partition { |r| r["mine"] }
+      rows = [{ label: "my relays (NIP-65)",
+                sub: "R/I/W/O/D/S 切替 · a 追加 · x 削除" }]
+      rows.concat(mine.map { |r| relay_row(r) })
+      unless gossip.empty?
+        rows << { label: "discovered (gossip)" }
+        gossip.each do |r|
+          rows << { label: "  #{r['url']}", right: r["state"].to_s,
+                    up: r["state"] == "connected" }
+        end
       end
+      rows
+    end
+
+    def relay_row(r)
+      switches = %w[read inbox write outbox discover search]
+                 .map { |k| r[k] == true ? k[0].upcase : "-" }
+                 .join(" ")
+      { label: r["url"].to_s, sub: switches,
+        right: r["state"].to_s, up: r["state"] == "connected",
+        url: r["url"].to_s,
+        "read" => r["read"] == true, "inbox" => r["inbox"] == true,
+        "write" => r["write"] == true, "outbox" => r["outbox"] == true,
+        "discover" => r["discover"] == true, "search" => r["search"] == true }
     end
 
     def settings_items
@@ -499,17 +562,30 @@ module NostrTui
       rows = [{ label: "birdwatch 0.1", sub: "nostr TUI" }, # o → GitHub someday
               { label: "profile", sub: name.empty? ? "not set" : name, right: "e edit" },
               { label: "nostr connect", sub: "NIP-46 pairing", right: "o QR" }]
+      rows.concat(blossom_rows)
       rows << { label: "unlock", sub: "vault passphrase → sign again", right: "u" } if @info&.dig("locked")
       rows << { label: "logout", sub: "lock the daemon signer", right: "s" }
       rows << { label: "import key", sub: "nsec (nsec1… or hex) + passphrase", right: "i" }
       rows
     end
 
+    # Settings tab renders the user's blossom server list (NIP-B7 kind
+    # 10063) as plain rows: a header + one row per server URL. The list is
+    # whatever the daemon last reported (info "blossom" / F fetch); nil
+    # means not fetched yet, [] means the user genuinely has no servers.
+    def blossom_rows
+      header = { label: "blossom servers", sub: "NIP-B7 kind 10063", right: "F/E/P" }
+      servers = @blossom_servers
+      return [header, { label: "  (未取得 — F で取得)" }] if servers.nil?
+      return [header, { label: "  (サーバーなし — E で追加)" }] if servers.empty?
+
+      [header] + servers.map { |u| { label: u.to_s } }
+    end
+
     def empty_hint
       case @tab
       when 1 then "no follows yet"
-      when 2 then "no relays connected"
-      when 3 then @chat_partner ? "no messages yet — m to write" : "no conversations yet — DMs land here"
+      when 2 then "no relays yet — a to add"
       else "no notes yet — start nostrd or press n to post"
       end
     end
@@ -548,6 +624,7 @@ module NostrTui
 
       item = list_items[@selected]
       return flash("no relay selected") unless item
+      return flash("gossip自動接続 — 切替不可") unless item[:url]
 
       if action == :relay_remove
         ok = client&.relay_remove(item[:url])
@@ -571,73 +648,6 @@ module NostrTui
     # NIP-25 like on the selected note; the daemon signs kind 7.
     # Settings tab: row-keyed actions — e/o/s/u/i act on the SELECTED row
     # (j/k to move). Keys mean nothing until a row is selected.
-    # --- chat tab: NIP-17 DMs ---
-
-    # Rows swap with mode: partner list (pubkey per row) or the open thread
-    # (direction in the label; rumors only — no relay metadata involved).
-    def chat_items
-      if @chat_partner
-        me = @info["me"].to_s
-        @chat_msgs.map do |r|
-          { label: r["pubkey"] == me ? "me" : chat_partner_name(r["pubkey"].to_s),
-            sub: r["content"].to_s, right: chat_time(r["created_at"]) }
-        end
-      else
-        @chat_convs.map do |c|
-          { label: chat_partner_name(c["pubkey"].to_s),
-            sub: (c["last"] || {})["content"].to_s,
-            right: c["count"].to_s, pubkey: c["pubkey"] }
-        end
-      end
-    end
-
-    def chat_partner_name(pk)
-      p = @timeline.profile_for(pk) || {}
-      p["display_name"] || p["name"] || "#{pk[0, 8]}…"
-    end
-
-    def chat_time(ts)
-      Time.at(ts.to_i).strftime("%m/%d %H:%M")
-    rescue RangeError, TypeError
-      ""
-    end
-
-    # The dms fetch rides its own sub so replies route back here (drain).
-    def refresh_chat
-      @dm_seq += 1
-      @chat_fetch = "dms_#{@dm_seq}"
-      @chat_msgs = [] if @chat_partner # stale rows out during refetch
-      @client&.dms(partner: @chat_partner, limit: 50, sub: @chat_fetch)
-    end
-
-    # Enter toggles list ↔ open thread.
-    def chat_enter(_client)
-      return flash("chat tab only") unless @tab == 3
-
-      if @chat_partner
-        @chat_partner = nil
-      else
-        item = chat_items[@selected]
-        return flash("no conversation selected") unless item && item[:pubkey]
-
-        @chat_partner = item[:pubkey]
-      end
-      @selected = 0
-      @first_visible = 0
-      refresh_chat
-    end
-
-    # m in an open thread: compose, then the daemon seals/wraps/publishes.
-    # The ack (dmsend_ id) triggers the refetch that shows our own message.
-    def chat_compose(_client)
-      return flash("open a thread first (Enter)") unless @tab == 3 && @chat_partner
-
-      text = ask_line("message: ")
-      return if text.nil? || text.empty? # ESC = cancel
-
-      @client&.send_dm(@chat_partner, text) ? flash("sending…") : flash("offline?")
-    end
-
     # b anywhere: upload a local file to blossom via the daemon (NIP-98
     # signed there, mirrored to the embedded server, published to publics).
     # The result frame (bput_ id) lands the URL in the flash + clipboard.
@@ -919,6 +929,33 @@ module NostrTui
 
       link = @timeline.links(selected_event).first
       open_external("xdg-open #{Shellwords.escape(link)}") if link
+    end
+
+    # Quick post/reply: ONE inline prompt on the status row, exactly like
+    # the DM prompt — no curses teardown, no editor handoff, so the TUI
+    # never "closes and reopens" mid-post. Long-form posts keep the
+    # $EDITOR flow under N (compose, below).
+    def compose_inline(client, reply_to: nil)
+      prompt = reply_to ? "reply to #{reply_to.author_short}: " : "note: "
+      text = ask_line(prompt)
+      return if text.nil? || text.strip.empty? # ESC or empty = cancel
+
+      submit_note(text.strip, reply_to, client)
+    end
+
+    # Shared submit path for inline compose/reply (N keeps the $EDITOR flow).
+    # Headless-testable: the prompt lives in compose_inline.
+    def submit_note(text, reply_to, client)
+      if reply_to
+        # NIP-22: replies are kind 1111 comments; tags live in the signed
+        # event, the body stays plain text.
+        client&.post_comment(text, id: reply_to.id, pubkey: reply_to.pubkey,
+                                    kind: reply_to.kind, tags: reply_to.tags)
+        flash("reply sent")
+      else
+        client&.post_note(text)
+        flash("sending…")
+      end
     end
 
     def compose(client, reply_to:)

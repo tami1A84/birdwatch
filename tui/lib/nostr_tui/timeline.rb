@@ -13,8 +13,10 @@ module NostrTui
 
     def initialize
       @by_id = {}
+      @by_pubkey = Hash.new { |h, k| h[k] = [] } # author => events, for cheap relabeling
       @profiles = {}
       @reactions = Hash.new { |h, k| h[k] = {} } # target id => { author pubkey => content }
+      @all_cache = nil
     end
 
     # The timeline view is notes only (kind 1); metadata (0) and relay lists
@@ -52,21 +54,40 @@ module NostrTui
       return false if @by_id.key?(event.id)
 
       @by_id[event.id] = event
+      @by_pubkey[event.pubkey] << event
       decorate(event)
+      @all_cache = nil
       true
     end
 
-    # kind 0 snapshot from the daemon ("profiles" frame) -> relabel all notes.
+    # kind 0 snapshots from the daemon ("profiles" frames). At boot these
+    # used to arrive one author per frame; redecorating EVERY event per
+    # frame made startup O(events x frames) — seconds of frozen UI. Now:
+    # identical snapshots are skipped and only the touched author's events
+    # are relabeled.
     def apply_profiles(profiles)
-      profiles.each do |p|
+      touched = []
+      Array(profiles).each do |p|
         next unless p.is_a?(Hash) && p["pubkey"]
 
-        @profiles[p["pubkey"]] = p
+        pk = p["pubkey"]
+        next if @profiles[pk] == p # unchanged snapshot — skip
+
+        @profiles[pk] = p
+        touched << pk
       end
-      @by_id.each_value { |e| decorate(e) }
+      touched.each do |pk|
+        @by_pubkey[pk].each { |e| decorate(e) }
+      end
+      @all_cache = nil unless touched.empty?
+      touched
     end
 
-    def all = @by_id.values.sort_by { |e| -e.created_at }
+    # Sorted newest-first, memoized: every keystroke repaint used to re-sort
+    # the whole timeline (filter -> all). Mutators nil the cache.
+    def all
+      @all_cache ||= @by_id.values.sort_by { |e| -e.created_at }
+    end
 
     def find(id) = @by_id[id]
 
