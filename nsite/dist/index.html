@@ -315,6 +315,10 @@ md-fab {
   padding: 16px var(--pad-screen) calc(var(--navbar-h) + 32px);
 }
 
+.content.settings-bg {
+  background: var(--md-sys-color-surface);
+}
+
 .page-title {
   font-size: 20px;
   font-weight: 700;
@@ -1339,18 +1343,13 @@ html:active-view-transition-type(back)::view-transition-new(root) {
     </section>
 
     <section id="view-settings" hidden>
-      <div class="page">
-        <h1 class="page-title">設定</h1>
-
+      <div class="page content settings-bg">
         <section class="settings-card">
           <h2 class="settings-card__title">アカウント</h2>
           <div class="settings-row">
             <span class="settings-row__label">公開鍵</span>
             <code class="settings-row__value settings-row__value--mono" id="acct-pk">—</code>
           </div>
-          <p class="settings-card__body settings-card__body--muted">
-            鍵は家のデーモン(vault)にだけあり、この端末は使い捨ての接続用鍵を持つだけです。
-          </p>
         </section>
 
         <section class="settings-card">
@@ -1361,9 +1360,6 @@ html:active-view-transition-type(back)::view-transition-new(root) {
               <span class="settings-row__value" id="bunker-state">確認中…</span>
             </div>
           </div>
-          <p class="settings-card__body settings-card__body--muted" id="bunker-hint">
-            投稿は家のPCのデーモンがbunker経由で署名します。
-          </p>
           <form id="bunker-form" class="settings-form">
             <label class="field">
               <span class="field__label">bunker URI</span>
@@ -1381,10 +1377,6 @@ html:active-view-transition-type(back)::view-transition-new(root) {
               </md-outlined-button>
             </div>
           </form>
-          <p class="settings-card__body settings-card__body--muted">
-            URIは家のPCで TUI設定 → nostr connect（QRページの下にURI表示）か
-            <code>bin/nostr --bunker-secret</code> で発行されます。PCのQRを「QRをスキャン」で読み取れば入力は不要です。
-          </p>
           <md-filled-button id="btn-disconnect" class="danger-button" hidden>
             <span class="msr" slot="icon">link_off</span>
             切断
