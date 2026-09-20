@@ -205,7 +205,7 @@ html { -webkit-text-size-adjust: 100%; }
 
 body {
   margin: 0;
-  background: var(--md-sys-color-surface);
+  background: #FAF8FE;
   color: var(--md-sys-color-on-surface);
   font-family: var(--font-serif);
   font-size: 16px;
@@ -318,6 +318,11 @@ md-fab {
 }
 
 .page { display: block; }
+
+/* settings page body — unify with app-bar header (same surface color) */
+.content.settings-bg {
+  background: var(--md-sys-color-surface);
+}
 
 /* ------------------------------------------------------------- timeline */
 
@@ -601,7 +606,6 @@ span.note-media { display: block; }
   z-index: 30;
   box-shadow: var(--elevation-3); /* level 3 */
   transition: transform 0.3s var(--ease-spring);
-  border-radius: 0;
 }
 
 .compose-fab:active { transform: scale(0.94); }
