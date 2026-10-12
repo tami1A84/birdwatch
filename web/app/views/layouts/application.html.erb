@@ -4,8 +4,10 @@
     <title><%= content_for(:title) || "birdwatch" %></title>
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <meta name="color-scheme" content="light dark">
-    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#FAF8FE">
-    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#141317">
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#F2F2F7">
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#000000">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <%= csrf_meta_tags %>
     <%= csp_meta_tag %>
     <link rel="manifest" href="<%= pwa_manifest_path %>">
@@ -15,17 +17,34 @@
     <%= javascript_include_tag "application", type: "module", "data-turbo-track": "reload" %>
   </head>
   <body class="page-<%= controller_name %>" data-controller="confirm">
-    <header class="app-bar">
-      <a class="app-bar__brand" href="<%= root_path %>" aria-label="birdwatch ホーム">
-        <img class="app-bar__logo" src="/icon-64.png" alt="birdwatch" width="28" height="28">
-      </a>
-      <div class="app-bar__title"><%= content_for(:title) || "birdwatch" %></div>
-      <md-icon-button class="app-bar__button" href="<%= favorites_path %>" aria-label="お気に入り">
-        <span class="msr">thumb_up</span>
-      </md-icon-button>
-      <md-icon-button class="app-bar__button" href="<%= search_path %>" aria-label="検索">
-        <span class="msr">search</span>
-      </md-icon-button>
+    <%# SVG refraction filter for liquid glass elements (edge displacement) %>
+    <svg width="0" height="0" class="liquid-glass-svg" aria-hidden="true" style="position:absolute;width:0;height:0;overflow:hidden">
+      <defs>
+        <radialGradient id="lg-lens-map" cx="50%" cy="50%" r="55%">
+          <stop offset="65%" stop-color="#808080"/>
+          <stop offset="100%" stop-color="#ffffff"/>
+        </radialGradient>
+        <filter id="liquid-glass-refract" x="-15%" y="-15%" width="130%" height="130%" color-interpolation-filters="sRGB">
+          <feTurbulence type="fractalNoise" baseFrequency="0.015 0.015" numOctaves="1" seed="3" result="noise"/>
+          <feGaussianBlur in="noise" stdDeviation="1.5" result="smoothNoise"/>
+          <feDisplacementMap in="SourceGraphic" in2="smoothNoise" scale="16" xChannelSelector="R" yChannelSelector="G"/>
+        </filter>
+      </defs>
+    </svg>
+
+    <% my_pubkey = me_info["me"] %>
+    <header class="app-header">
+      <a class="app-header__home" href="<%= root_path %>">ホーム</a>
+      <div class="app-header__spacer"></div>
+      <% if my_pubkey.present? %>
+        <a class="app-header__avatar" href="<%= profile_path(my_pubkey) %>" aria-label="自分のプロフィール">
+          <%= avatar_tag(my_pubkey, klass: "avatar--sm") %>
+        </a>
+      <% else %>
+        <a class="app-header__avatar" href="<%= settings_path %>" aria-label="設定">
+          <span class="avatar avatar--sm"><span class="msr avatar__fallback">person</span></span>
+        </a>
+      <% end %>
     </header>
 
     <main class="content">
@@ -34,25 +53,23 @@
       <%= yield %>
     </main>
 
-    <nav class="nav-bar" data-controller="nav" data-nav-index-value="<%= nav_index %>">
-      <md-navigation-bar>
-        <md-navigation-tab label="ホーム" data-href="<%= root_path %>">
-          <span class="msr" slot="active-icon">home</span>
-          <span class="msr" slot="inactive-icon">home</span>
-        </md-navigation-tab>
-        <md-navigation-tab label="フォロー" data-href="<%= follows_path %>">
-          <span class="msr" slot="active-icon">group</span>
-          <span class="msr" slot="inactive-icon">group</span>
-        </md-navigation-tab>
-        <md-navigation-tab label="リレー" data-href="<%= relays_path %>">
-          <span class="msr" slot="active-icon">language</span>
-          <span class="msr" slot="inactive-icon">language</span>
-        </md-navigation-tab>
-        <md-navigation-tab label="設定" data-href="<%= settings_path %>">
-          <span class="msr" slot="active-icon">settings</span>
-          <span class="msr" slot="inactive-icon">settings</span>
-        </md-navigation-tab>
-      </md-navigation-bar>
+    <nav class="bottom-nav" aria-label="メインナビゲーション">
+      <a class="bottom-nav__circle liquid-glass" href="<%= root_path %>" aria-label="ホーム" <%= 'aria-current=page' if controller_name == 'home' %>>
+        <span class="msr">home</span>
+      </a>
+
+      <a class="bottom-nav__search liquid-glass" href="<%= search_path %>" aria-label="検索" <%= 'aria-current=page' if controller_name == 'search' %>>
+        <span class="msr bottom-nav__search-icon">search</span>
+        <span class="bottom-nav__search-label">検索</span>
+      </a>
+
+      <button type="button" class="bottom-nav__circle bottom-nav__compose liquid-glass" data-controller="compose" data-action="click->compose#open" aria-label="新規投稿">
+        <svg class="compose-icon-notes" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M13.5 6H6.2A3.2 3.2 0 0 0 3 9.2v8.6A3.2 3.2 0 0 0 6.2 21h8.6a3.2 3.2 0 0 0 3.2-3.2V10.5"/>
+          <path d="M11.2 15.8 13.7 15.2 19.2 9.7 17.4 7.8 11.8 13.3Z"/>
+          <path d="M17.8 11.1 15.9 9.2"/>
+        </svg>
+      </button>
     </nav>
 
     <div id="app-toast" class="toast" role="status" aria-live="polite"></div>

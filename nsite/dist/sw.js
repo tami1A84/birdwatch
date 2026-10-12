@@ -5,7 +5,7 @@
 // editing this file (nsite.lol caches each path for up to 1h, so expect at most
 // that much lag). Icons/fonts are effectively immutable: cache-first.
 // Bump CACHE only when a bad build must be evicted from clients at once.
-const CACHE = 'bw-shell-v16'
+const CACHE = 'bw-shell-v17'
 const APP_FILES = ['/app.js', '/style.css']
 const ASSETS = ['./', './app.js', './style.css', './manifest.webmanifest',
                 './icon-64.png', './icon-192.png', './icon-512.png',

@@ -85,6 +85,23 @@ function renderBunkerState(text, connected = null) {
   $('btn-disconnect').style.display = connected === true ? '' : 'none'
 }
 
+// ヘッダー右のアバターは「自分」のアイコン(未接続なら person のまま)。
+// タイムラインのアバターと違い、ここだけ丸(css: .app-header__avatar .avatar)。
+function renderHeaderAvatar(pk) {
+  const box = $('header-avatar')
+  if (!box) return
+  box.querySelector('img')?.remove()
+  const pic = pk ? (profiles.get(pk)?.picture || '') : ''
+  if (!pic) return
+  const img = document.createElement('img')
+  img.alt = ''
+  img.decoding = 'async'
+  img.referrerPolicy = 'no-referrer'
+  img.onerror = () => img.remove()
+  img.src = pic
+  box.appendChild(img)
+}
+
 async function connectStored(onDone = () => {}) {
   const uri = localStorage.getItem(URI_KEY)
   if (!uri) { renderBunkerState('未接続(閲覧のみ)'); return false }
@@ -100,6 +117,12 @@ async function connectStored(onDone = () => {}) {
     renderBunkerState('接続済み', true)
     $('acct-pk').textContent = `${npub(userPk).slice(0, 16)}…`
     $('bunker-uri').value = uri
+    // 自分の kind-0 を取りに行ってヘッダーのアバターを描く(失敗しても無害)。
+    try {
+      const mine = await fetchProfiles(relays, [userPk])
+      for (const [k, v] of mine) profiles.set(k, v)
+      renderHeaderAvatar(userPk)
+    } catch { /* 未取得なら fallback アイコンのまま */ }
     onDone()
     return true
   } catch (e) {
@@ -569,12 +592,13 @@ function setupInstallHint() {
 }
 
 // ----- navigation ----------------------------------------------------------
-// No bottom nav (N, 2026-09-06 round 3): the app-bar settings button opens
-// settings and doubles as "back" while inside it; home is the only tab.
+// ホームと設定の2ビュー。入口はヘッダー右の自分のアバター(設定)、
+// 戻りはヘッダー左の「ホーム」か設定画面の戻るボタン。下部ナビのホーム丸も
+// ホームへ戻る。下部ナビはホーム表示中だけ出す(設定では邪魔になるため)。
 
 const VIEWS = [
-  { id: 'home', title: 'birdwatch' },
-  { id: 'settings', title: '設定' },
+  { id: 'home' },
+  { id: 'settings' },
 ]
 
 let currentView = 0
@@ -582,13 +606,11 @@ let currentView = 0
 function showView(i) {
   currentView = i
   for (const [n, v] of VIEWS.entries()) $(`view-${v.id}`).hidden = n !== i
-  $('appbar-title').textContent = VIEWS[i].title
-  $('compose-fab').style.display = i === 0 ? '' : 'none' // md-fab ignores [hidden]
-  const settingsIcon = $('btn-settings')?.querySelector('.msr')
-  if (settingsIcon) {
-    settingsIcon.textContent = i === 0 ? 'settings' : 'arrow_back'
-    $('btn-settings').setAttribute('aria-label', i === 0 ? '設定' : '戻る')
-  }
+  const nav = document.querySelector('.bottom-nav')
+  if (nav) nav.hidden = i !== 0
+  const back = $('settings-back')
+  if (back) back.hidden = i === 0
+  $('btn-settings')?.setAttribute('aria-label', i === 0 ? '設定' : '戻る')
 }
 
 // ----- boot splash reveal (N, 2026-09-07 round 3) ---------------------------
@@ -709,6 +731,8 @@ async function startQr() {
 const on = (id, ev, fn) => $(id)?.addEventListener(ev, fn)
 
 on('btn-settings', 'click', () => showView(currentView === 0 ? 1 : 0))
+on('settings-back', 'click', () => showView(0))
+on('nav-home', 'click', () => showView(0))
 
 $('bunker-form').addEventListener('submit', (e) => {
   e.preventDefault()
@@ -819,6 +843,14 @@ showView(0)
     } catch { /* URIが壊れていてもデフォルトリレーで読める */ }
   }
   whenConnected = connectStored()
+  // キャッシュ済みの公開鍵で、bunker の接続を待たずに自分のアイコンを描く。
+  if (userPk) {
+    try {
+      const mine = await fetchProfiles(relays, [userPk])
+      for (const [k, v] of mine) profiles.set(k, v)
+    } catch { /* fallback のまま */ }
+    renderHeaderAvatar(userPk)
+  }
   const firstMode = await loadFeed()
   revealApp()
   const ok = await whenConnected

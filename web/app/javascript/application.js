@@ -6,21 +6,17 @@ import "@material/web/button/filled-tonal-button.js";
 import "@material/web/iconbutton/icon-button.js";
 import "@material/web/fab/fab.js";
 import "@material/web/dialog/dialog.js";
-import "@material/web/labs/navigationbar/navigation-bar.js";
-import "@material/web/labs/navigationtab/navigation-tab.js";
 
 import { Application } from "@hotwired/stimulus";
 import LiveController from "./controllers/live_controller";
 import ComposeController from "./controllers/compose_controller";
 import ConfirmController from "./controllers/confirm_controller";
-import NavController from "./controllers/nav_controller";
 import FavoritesController from "./controllers/favorites_controller";
 
 const app = Application.start();
 app.register("live", LiveController);
 app.register("compose", ComposeController);
 app.register("confirm", ConfirmController);
-app.register("nav", NavController);
 app.register("favorites", FavoritesController);
 
 // ----- shared helpers (toast + favorites) ---------------------------------
